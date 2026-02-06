@@ -14,17 +14,22 @@ PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 def to_kanji(n):
     try:
         n = int(n)
-        kanji = {1:'一', 2:'二', 3:'三', 4:'四', 5:'五', 6:'六', 7:'七', 8:'八', 9:'九', 10:'十'}
+        kanji = {0:'', 1:'一', 2:'二', 3:'三', 4:'四', 5:'五', 6:'六', 7:'七', 8:'八', 9:'九', 10:'十'}
         if n <= 10: return kanji[n]
-        if n < 20: return "十" + (kanji[n % 10] if n % 10 != 0 else "")
-        if n < 100: return kanji[n // 10] + "十" + (kanji[n % 10] if n % 10 != 0 else "")
+        if n < 20: return "十" + kanji[n%10]
+        if n < 100: return kanji[n//10] + "十" + kanji[n%10]
         return str(n)
     except: return n
 
-# --- 裏側で動く「後出し」の関数 ---
+# 死活監視用
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
+# 裏側でe-Govから取得してメッセージを更新する関数
 async def fetch_and_edit_response(token, target_no):
     try:
-        # 巨大なデータをゆっくりダウンロード
+        # e-Gov APIから憲法データを取得
         res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/321CONSTITUTION")
         res.encoding = "utf-8"
         xml_text = res.text
@@ -35,14 +40,18 @@ async def fetch_and_edit_response(token, target_no):
         if target_no == "前文":
             title = "📜 日本国憲法 前文"
             match = re.search(r"<Preamble>(.*?)</Preamble>", xml_text, re.DOTALL)
-            if match: display_text = re.sub("<[^>]*>", "", match.group(1))
+            if match:
+                display_text = re.sub("<[^>]*>", "", match.group(1))
         else:
             k_no = to_kanji(target_no)
+            # 日本国憲法特有の「ArticleTitle属性」を狙い撃ちするパターン
             pattern = rf'ArticleTitle="第{k_no}条".*?<ArticleSentence>(.*?)</ArticleSentence>'
             match = re.search(pattern, xml_text, re.DOTALL)
-            if match: display_text = re.sub("<[^>]*>", "", match.group(1))
+            
+            if match:
+                display_text = re.sub("<[^>]*>", "", match.group(1))
 
-        # Discordの「考えています...」を本物に書き換える
+        # Discordの「考えています...」を本物の内容に上書き
         patch_url = f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original"
         payload = {
             "embeds": [{
@@ -56,12 +65,9 @@ async def fetch_and_edit_response(token, target_no):
     except Exception as e:
         print(f"Error: {e}")
 
-@app.get("/")
-async def root():
-    return {"status": "ok"}
-
 @app.post("/interactions")
 async def handle_interactions(request: Request):
+    # 署名検証
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
     body = await request.body()
@@ -77,10 +83,10 @@ async def handle_interactions(request: Request):
         options = data["data"].get("options", [])
         target_no = options[0]["value"] if options else "前文"
 
-        # 【魔法の1行】裏でデータ取得を開始！
+        # 1. まず「考え中（Type 5）」と即レスして3秒ルールを回避
         asyncio.create_task(fetch_and_edit_response(token, target_no))
         
-        # 0.1秒で「考え中...（タイプ5）」と返事をする
+        # 2. Discordには「了解」とだけ先に返す
         return {"type": 5}
 
 @app.on_event("startup")
