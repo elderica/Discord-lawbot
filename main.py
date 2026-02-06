@@ -59,23 +59,31 @@ async def handle_interactions(request: Request):
 
     # コマンド実行 (登録した "law" コマンドに反応する)
     if data.get("type") == 2:
-        # 固有ID（321CONSTITUTION）を使うのが一番確実です
         res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/321CONSTITUTION")
         res.encoding = 'utf-8'
         
         import re
-        # XMLタグを削除して中身のテキストだけにする
-        clean_text = re.sub('<[^>]*>', '', res.text)
-        # 「取得結果が0件〜」という文字が含まれていないかチェックしつつ整形
-        if "取得結果が０件" in clean_text:
-            display_text = "⚠️ APIからデータが見つかりませんでした。URLを確認してください。"
+        # 1. まずタグを消す
+        raw_text = re.sub('<[^>]*>', '', res.text)
+        
+        # 2. 検索エラーがないかチェック
+        if "取得結果が０件" in raw_text:
+            display_text = "⚠️ 法律が見つかりませんでした。"
         else:
-            # 最初の1000文字を抽出（前文から始まります）
-            display_text = clean_text.replace('\n', ' ').strip()[:1000]
+            # 3. 「日本国憲法」という文字より後の「本文」だけを取り出す
+            if "日本国憲法" in raw_text:
+                # splitで分割して、最後の要素（本文）だけを採用
+                body_text = raw_text.split("日本国憲法")[-1]
+            else:
+                body_text = raw_text
+                
+            # 4. 連続する空白や改行をスッキリさせる
+            # \s+ は「1つ以上の空白・改行」を意味します。これをスペース1個に置換。
+            display_text = re.sub(r'\s+', ' ', body_text).strip()[:1000]
 
         return {
             "type": 4,
             "data": {
-                "content": f"📜 **【日本国憲法】正解データ**\n\n{display_text}..."
+                "content": f"📜 **日本国憲法 前文**\n\n{display_text}..."
             }
         }
