@@ -130,7 +130,7 @@ async def handle_interactions(request: Request):
     
     if data.get("type") == 2:
         token = data.get("token")
-        options = data(["data"]).get("options", [])
+        options = data["data"].get("options", [])
         target_no = options[0]["value"] if options else "前文"
         
         asyncio.create_task(fetch_and_edit_response(token, target_no))
