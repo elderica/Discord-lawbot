@@ -59,8 +59,19 @@ async def handle_interactions(request: Request):
 
     # コマンド実行 (登録した "law" コマンドに反応する)
     if data.get("type") == 2:
+        # e-Gov APIからデータを取得
         res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/昭和二十二年憲法")
+        res.encoding = 'utf-8' # 文字化け防止
+        
+        # 簡易的なテキスト抽出
+        # XMLタグを消して、中身の文章だけを少し取り出します
+        import re
+        clean_text = re.sub('<[^>]*>', '', res.text) # タグを削除
+        summary = clean_text.replace('\n', ' ').strip()[:500] # 最初の500文字
+
         return {
             "type": 4,
-            "data": {"content": f"e-Gov API 接続成功！データ文字数: {len(res.text)}"}
+            "data": {
+                "content": f"📜 **【日本国憲法】を取得しました**\n\n{summary}..."
+            }
         }
