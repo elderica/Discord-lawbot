@@ -10,6 +10,16 @@ APPLICATION_ID = os.getenv("APPLICATION_ID")
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 
+# 漢数字変換用の関数（1〜103条まで対応）
+def to_kanji(n):
+    kanji = {1:'一', 2:'二', 3:'三', 4:'四', 5:'五', 6:'六', 7:'七', 8:'八', 9:'九', 10:'十'}
+    n = int(n)
+    if n <= 10: return kanji[n]
+    if n < 20: return "十" + (kanji[n%10] if n%10!=0 else "")
+    if n < 100: return kanji[n//10] + "十" + (kanji[n%10] if n%10!=0 else "")
+    if n < 110: return "百" + (kanji[n%10] if n%10!=0 else "")
+    return str(n)
+
 @app.on_event("startup")
 async def register_commands():
     url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
@@ -55,17 +65,21 @@ async def handle_interactions(request: Request):
             if match:
                 display_text = re.sub('<[^>]*>', '', match.group(1))
         else:
-            # 条文ごとに分割してループで探す
-            articles = xml_text.split('<Article ')
-            for art in articles:
-                # ユーザーが入力した数字（例：9）が ArticleTitle="第9条" のように含まれているか
-                if f'ArticleTitle="第{target_no}条"' in art:
-                    title = f"🏛️ 日本国憲法 第{target_no}条"
-                    # 本文を抜き出す
-                    sentence_match = re.search(r'<ArticleSentence>(.*?)</ArticleSentence>', art, re.DOTALL)
-                    if sentence_match:
-                        display_text = re.sub('<[^>]*>', '', sentence_match.group(1))
-                    break
+            try:
+                # 数字を漢数字に変換 (例: 9 -> 九, 15 -> 十五)
+                kanji_no = to_kanji(target_no)
+                # 漢数字で検索
+                pattern = f'ArticleTitle="第{kanji_no}条"'
+                articles = xml_text.split('<Article ')
+                for art in articles:
+                    if pattern in art:
+                        title = f"🏛️ 日本国憲法 第{target_no}条 ({kanji_no}条)"
+                        sentence_match = re.search(r'<ArticleSentence>(.*?)</ArticleSentence>', art, re.DOTALL)
+                        if sentence_match:
+                            display_text = re.sub('<[^>]*>', '', sentence_match.group(1))
+                        break
+            except:
+                display_text = "数字（1〜103）を入力してください。"
 
         return {
             "type": 4,
