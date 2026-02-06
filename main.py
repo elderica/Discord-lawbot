@@ -97,7 +97,8 @@ async def fetch_and_edit_response(token, target_no):
         payload = {
             "embeds": [{
                 "title": title,
-                "description": display_text[:4000],
+                # 無駄なスペースは消すけど、改行（\n）は守る書き方
+                "description": display_text.replace(" ", "").replace("　", "").strip()[:1800],
                 "color": 0x3498DB,
                 "footer": {"text": "e-Gov APIより取得"}
             }]
