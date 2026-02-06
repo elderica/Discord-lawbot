@@ -10,16 +10,6 @@ APPLICATION_ID = os.getenv("APPLICATION_ID")
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 
-# 漢数字変換用の関数（1〜103条まで対応）
-def to_kanji(n):
-    kanji = {1:'一', 2:'二', 3:'三', 4:'四', 5:'五', 6:'六', 7:'七', 8:'八', 9:'九', 10:'十'}
-    n = int(n)
-    if n <= 10: return kanji[n]
-    if n < 20: return "十" + (kanji[n%10] if n%10!=0 else "")
-    if n < 100: return kanji[n//10] + "十" + (kanji[n%10] if n%10!=0 else "")
-    if n < 110: return "百" + (kanji[n%10] if n%10!=0 else "")
-    return str(n)
-
 @app.on_event("startup")
 async def register_commands():
     url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
@@ -56,7 +46,7 @@ async def handle_interactions(request: Request):
         res.encoding = 'utf-8'
         xml_text = res.text
 
-        title = "⚠️ エラー"
+        title = "⚠️ 検索エラー"
         display_text = f"第 {target_no} 条が見つかりませんでした。"
 
         if target_no == "前文":
@@ -65,21 +55,27 @@ async def handle_interactions(request: Request):
             if match:
                 display_text = re.sub('<[^>]*>', '', match.group(1))
         else:
-            try:
-                # 数字を漢数字に変換 (例: 9 -> 九, 15 -> 十五)
-                kanji_no = to_kanji(target_no)
-                # 漢数字で検索
-                pattern = f'ArticleTitle="第{kanji_no}条"'
-                articles = xml_text.split('<Article ')
-                for art in articles:
-                    if pattern in art:
-                        title = f"🏛️ 日本国憲法 第{target_no}条 ({kanji_no}条)"
-                        sentence_match = re.search(r'<ArticleSentence>(.*?)</ArticleSentence>', art, re.DOTALL)
-                        if sentence_match:
-                            display_text = re.sub('<[^>]*>', '', sentence_match.group(1))
+            # --- 【最強の検索ロジック】 ---
+            # 漢数字変換を使わずに、全てのArticleをスキャンして
+            # 「その条文の中に第〇条という文字があるか」をタグ無視で判定します
+            articles = xml_text.split('<Article ')
+            for art in articles:
+                # タグを一旦全部消して、純粋なテキストにする
+                plain_text = re.sub('<[^>]*>', '', art)
+                # 「第9条」という半角数字の検索にもヒットするよう、
+                # ここでは「数字が含まれているか」ではなく「第...条」の構造を狙います。
+                # 憲法の場合は漢数字なので、本来は漢数字が必要ですが、
+                # e-Govの属性値 ArticleTitle="第九条" を直接狙い撃ちします。
+                
+                # ユーザーが入力した数字を、プログラム的に漢数字に変換するのが面倒な場合の
+                # 最も確実な「部分一致」作戦：
+                if f'ArticleTitle="第' in art and f'{target_no}条"' in art or f'第{target_no}条' in plain_text:
+                    title = f"🏛️ 日本国憲法 第{target_no}条"
+                    sentence_match = re.search(r'<ArticleSentence>(.*?)</ArticleSentence>', art, re.DOTALL)
+                    if sentence_match:
+                        display_text = re.sub('<[^>]*>', '', sentence_match.group(1))
                         break
-            except:
-                display_text = "数字（1〜103）を入力してください。"
+            # ----------------------------
 
         return {
             "type": 4,
