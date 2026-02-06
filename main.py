@@ -1,9 +1,10 @@
-from fastapi import FastAPI, Request, HTTPException
-from nacl.signing import VerifyKey
+from bs4 import BeautifulSoup
 import requests
 import os
 import re
 import asyncio
+from fastapi import FastAPI, Request, HTTPException
+from nacl.signing import VerifyKey
 
 app = FastAPI()
 
@@ -14,79 +15,125 @@ PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 def to_kanji(n):
     try:
         n = int(n)
-        kanji = {0:'', 1:'一', 2:'二', 3:'三', 4:'四', 5:'五', 6:'六', 7:'七', 8:'八', 9:'九', 10:'十'}
-        if n <= 10: return kanji[n]
-        if n < 20: return "十" + kanji[n%10]
-        if n < 100: return kanji[n//10] + "十" + kanji[n%10]
+        kanji = {0:'', 1:'一', 2:'二', 3:'三', 4:'四', 5:'五', 
+                 6:'六', 7:'七', 8:'八', 9:'九', 10:'十'}
+        if n <= 10: 
+            return kanji[n]
+        if n < 20: 
+            return "十" + kanji[n % 10]
+        if n < 100: 
+            return kanji[n // 10] + "十" + kanji[n % 10]
         return str(n)
-    except: return n
+    except: 
+        return str(n)
 
-# 死活監視用
 @app.get("/")
 async def root():
     return {"status": "ok"}
 
-# 裏側でe-Govから取得してメッセージを更新する関数
 async def fetch_and_edit_response(token, target_no):
     try:
-        # e-Gov APIから憲法データを取得
-        res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/321CONSTITUTION")
+        res = requests.get(
+            "https://elaws.e-gov.go.jp/api/1/lawdata/321CONSTITUTION",
+            timeout=10
+        )
+        res.raise_for_status()
         res.encoding = "utf-8"
-        xml_text = res.text
-
+        
+        soup = BeautifulSoup(res.text, 'xml')
+        
         title = f"🏛️ 日本国憲法 第{target_no}条"
         display_text = "条文が見つかりませんでした。"
-
+        
         if target_no == "前文":
             title = "📜 日本国憲法 前文"
-            match = re.search(r"<Preamble>(.*?)</Preamble>", xml_text, re.DOTALL)
-            if match:
-                display_text = re.sub("<[^>]*>", "", match.group(1))
+            preamble = soup.find('Preamble')
+            if preamble:
+                display_text = preamble.get_text(strip=True)
         else:
             k_no = to_kanji(target_no)
-            # 日本国憲法特有の「ArticleTitle属性」を狙い撃ちするパターン
-            pattern = rf'ArticleTitle="第{k_no}条".*?<ArticleSentence>(.*?)</ArticleSentence>'
-            match = re.search(pattern, xml_text, re.DOTALL)
             
-            if match:
-                display_text = re.sub("<[^>]*>", "", match.group(1))
-
-        # Discordの「考えています...」を本物の内容に上書き
+            # 複数の方法で検索
+            article = None
+            
+            # 方法1: ArticleTitle属性で検索
+            article = soup.find('Article', {'ArticleTitle': f'第{k_no}条'})
+            
+            # 方法2: ArticleTitle要素で検索
+            if not article:
+                for art in soup.find_all('Article'):
+                    title_elem = art.find('ArticleTitle')
+                    if title_elem and f'第{k_no}条' in title_elem.get_text():
+                        article = art
+                        break
+            
+            # 方法3: Num属性で検索
+            if not article:
+                article = soup.find('Article', {'Num': str(target_no)})
+            
+            if article:
+                # ArticleCaption（条文の見出し）を取得
+                caption = article.find('ArticleCaption')
+                caption_text = f"【{caption.get_text(strip=True)}】\n" if caption else ""
+                
+                # Paragraphから本文を取得
+                paragraphs = article.find_all('Paragraph')
+                para_texts = []
+                for para in paragraphs:
+                    para_num = para.get('Num', '')
+                    sentences = para.find_all('Sentence')
+                    if sentences:
+                        para_text = ''.join([s.get_text(strip=True) for s in sentences])
+                        if para_num and para_num != '1':
+                            para_texts.append(f"{para_num}. {para_text}")
+                        else:
+                            para_texts.append(para_text)
+                
+                if para_texts:
+                    display_text = caption_text + '\n'.join(para_texts)
+        
+        # Discordメッセージを更新
         patch_url = f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original"
         payload = {
             "embeds": [{
                 "title": title,
-                "description": re.sub(r"\s+", " ", display_text).strip()[:1800],
+                "description": display_text[:4000],
                 "color": 0x3498DB,
                 "footer": {"text": "e-Gov APIより取得"}
             }]
         }
-        requests.patch(patch_url, json=payload)
+        response = requests.patch(patch_url, json=payload, timeout=10)
+        response.raise_for_status()
+        
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 @app.post("/interactions")
 async def handle_interactions(request: Request):
-    # 署名検証
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
     body = await request.body()
+    
     try:
-        VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(timestamp.encode() + body, bytes.fromhex(signature))
-    except: raise HTTPException(status_code=401)
-
+        VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(
+            timestamp.encode() + body, bytes.fromhex(signature)
+        )
+    except:
+        raise HTTPException(status_code=401)
+    
     data = await request.json()
-    if data.get("type") == 1: return {"type": 1}
-
+    
+    if data.get("type") == 1:
+        return {"type": 1}
+    
     if data.get("type") == 2:
         token = data.get("token")
-        options = data["data"].get("options", [])
+        options = data(["data"]).get("options", [])
         target_no = options[0]["value"] if options else "前文"
-
-        # 1. まず「考え中（Type 5）」と即レスして3秒ルールを回避
-        asyncio.create_task(fetch_and_edit_response(token, target_no))
         
-        # 2. Discordには「了解」とだけ先に返す
+        asyncio.create_task(fetch_and_edit_response(token, target_no))
         return {"type": 5}
 
 @app.on_event("startup")
