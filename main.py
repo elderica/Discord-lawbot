@@ -14,22 +14,40 @@ PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 def to_kanji(n):
     try:
         n = int(n)
-        kanji = {1:'一', 2:'二', 3:'三', 4:'四', 5:'五', 6:'六', 7:'七', 8:'八', 9:'九', 10:'十'}
-        if n <= 10: return kanji[n]
-        if n < 20: return "十" + (kanji[n%10] if n%10!=0 else "")
-        if n < 100: return kanji[n//10] + "十" + (kanji[n%10] if n%10!=0 else "")
-        if n < 110: return "百" + (kanji[n%10] if n%10!=0 else "")
+        kanji = {
+            1: '一', 2: '二', 3: '三', 4: '四', 5: '五',
+            6: '六', 7: '七', 8: '八', 9: '九', 10: '十'
+        }
+        if n <= 10:
+            return kanji[n]
+        if n < 20:
+            return "十" + (kanji[n % 10] if n % 10 != 0 else "")
+        if n < 100:
+            return kanji[n // 10] + "十" + (kanji[n % 10] if n % 10 != 0 else "")
+        if n < 110:
+            return "百" + (kanji[n % 10] if n % 10 != 0 else "")
         return str(n)
-    except: return n
+    except:
+        return n
 
 @app.on_event("startup")
 async def register_commands():
     url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
-    headers = {"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bot {BOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
     payload = {
-        "name": "law", 
+        "name": "law",
         "description": "日本国憲法を表示します",
-        "options": [{"name": "number", "description": "条文番号（例：9）", "type": 3, "required": False}]
+        "options": [
+            {
+                "name": "number",
+                "description": "条文番号（例：9）",
+                "type": 3,
+                "required": False
+            }
+        ]
     }
     requests.post(url, headers=headers, json=payload)
 
@@ -41,7 +59,7 @@ async def handle_interactions(request: Request):
 
     try:
         VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(
-            f'{timestamp}'.encode() + body,
+            timestamp.encode() + body,
             bytes.fromhex(signature)
         )
     except:
@@ -49,15 +67,17 @@ async def handle_interactions(request: Request):
 
     data = await request.json()
 
+    # PING
     if data.get("type") == 1:
         return {"type": 1}
 
+    # APPLICATION_COMMAND
     if data.get("type") == 2:
         options = data["data"].get("options", [])
         target_no = options[0]["value"] if options else "前文"
 
         res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/321CONSTITUTION")
-        res.encoding = 'utf-8'
+        res.encoding = "utf-8"
         xml_text = res.text
 
         title = f"🏛️ 日本国憲法 第{target_no}条"
@@ -65,23 +85,29 @@ async def handle_interactions(request: Request):
 
         if target_no == "前文":
             title = "📜 日本国憲法 前文"
-            match = re.search(r'<Preamble>(.*?)</Preamble>', xml_text, re.DOTALL)
+            match = re.search(r"<Preamble>(.*?)</Preamble>", xml_text, re.DOTALL)
+            if match:
+                display_text = re.sub("<[^>]*>", "", match.group(1))
+
         else:
             k_no = to_kanji(target_no)
-            pattern = rf'<Article>.*?<ArticleTitle>第{k_no}条</ArticleTitle>.*?<ArticleSentence>(.*?)</ArticleSentence>.*?</Article>'
+            pattern = rf"<Article>.*?<ArticleTitle>第{k_no}条</ArticleTitle>.*?</Article>"
             match = re.search(pattern, xml_text, re.DOTALL)
 
-        if match:
-            display_text = re.sub('<[^>]*>', '', match.group(1))
+            if match:
+                article_block = match.group(0)
+                display_text = re.sub("<[^>]*>", "", article_block)
 
         return {
             "type": 4,
             "data": {
-                "embeds": [{
-                    "title": title,
-                    "description": re.sub(r'\s+', ' ', display_text).strip()[:1800],
-                    "color": 0x3498db,
-                    "footer": {"text": "e-Gov APIより取得"}
-                }]
+                "embeds": [
+                    {
+                        "title": title,
+                        "description": re.sub(r"\s+", " ", display_text).strip()[:1800],
+                        "color": 0x3498DB,
+                        "footer": {"text": "e-Gov APIより取得"}
+                    }
+                ]
             }
         }
