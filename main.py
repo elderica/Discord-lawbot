@@ -60,7 +60,7 @@ async def handle_interactions(request: Request):
     # コマンド実行 (登録した "law" コマンドに反応する)
     if data.get("type") == 2:
         # e-Gov APIからデータを取得
-        res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/昭和二十二年憲法")
+        res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/日本国憲法")
         res.encoding = 'utf-8' # 文字化け防止
         
         # 簡易的なテキスト抽出
