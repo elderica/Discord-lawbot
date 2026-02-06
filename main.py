@@ -38,12 +38,19 @@ async def handle_interactions(request: Request):
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
     body = await request.body()
+
     try:
-        VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(f'{timestamp}'.encode() + body, bytes.fromhex(signature))
-    except: raise HTTPException(status_code=401)
+        VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(
+            f'{timestamp}'.encode() + body,
+            bytes.fromhex(signature)
+        )
+    except:
+        raise HTTPException(status_code=401)
 
     data = await request.json()
-    if data.get("type") == 1: return {"type": 1}
+
+    if data.get("type") == 1:
+        return {"type": 1}
 
     if data.get("type") == 2:
         options = data["data"].get("options", [])
@@ -59,17 +66,13 @@ async def handle_interactions(request: Request):
         if target_no == "前文":
             title = "📜 日本国憲法 前文"
             match = re.search(r'<Preamble>(.*?)</Preamble>', xml_text, re.DOTALL)
-            if match: display_text = re.sub('<[^>]*>', '', match.group(1))
         else:
             k_no = to_kanji(target_no)
-            # あなたが指摘したタグの構造を考慮して、ArticleTitleから次のArticleまでを切り出して中身を抜く
-            # 漢数字の条文タイトルにマッチさせる
-            pattern = rf'ArticleTitle="第{k_no}条".*?<ArticleSentence>(.*?)</ArticleSentence>'
+            pattern = rf'<Article>.*?<ArticleTitle>第{k_no}条</ArticleTitle>.*?<ArticleSentence>(.*?)</ArticleSentence>.*?</Article>'
             match = re.search(pattern, xml_text, re.DOTALL)
-            
-            if match:
-                # ここで Paragraph などのタグをすべて掃除してテキストだけにする
-                display_text = re.sub('<[^>]*>', '', match.group(1))
+
+        if match:
+            display_text = re.sub('<[^>]*>', '', match.group(1))
 
         return {
             "type": 4,
