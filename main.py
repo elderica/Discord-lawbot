@@ -59,19 +59,23 @@ async def handle_interactions(request: Request):
 
     # コマンド実行 (登録した "law" コマンドに反応する)
     if data.get("type") == 2:
-        # e-Gov APIからデータを取得
-        res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/日本国憲法")
-        res.encoding = 'utf-8' # 文字化け防止
+        # 固有ID（321CONSTITUTION）を使うのが一番確実です
+        res = requests.get("https://elaws.e-gov.go.jp/api/1/lawdata/321CONSTITUTION")
+        res.encoding = 'utf-8'
         
-        # 簡易的なテキスト抽出
-        # XMLタグを消して、中身の文章だけを少し取り出します
         import re
-        clean_text = re.sub('<[^>]*>', '', res.text) # タグを削除
-        summary = clean_text.replace('\n', ' ').strip()[:500] # 最初の500文字
+        # XMLタグを削除して中身のテキストだけにする
+        clean_text = re.sub('<[^>]*>', '', res.text)
+        # 「取得結果が0件〜」という文字が含まれていないかチェックしつつ整形
+        if "取得結果が０件" in clean_text:
+            display_text = "⚠️ APIからデータが見つかりませんでした。URLを確認してください。"
+        else:
+            # 最初の1000文字を抽出（前文から始まります）
+            display_text = clean_text.replace('\n', ' ').strip()[:1000]
 
         return {
             "type": 4,
             "data": {
-                "content": f"📜 **【日本国憲法】を取得しました**\n\n{summary}..."
+                "content": f"📜 **【日本国憲法】正解データ**\n\n{display_text}..."
             }
         }
