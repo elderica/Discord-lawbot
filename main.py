@@ -1,19 +1,10 @@
 import os
 import asyncio
 import httpx
-import sys
 from fastapi import FastAPI, Request, HTTPException
 from nacl.signing import VerifyKey
 from contextlib import asynccontextmanager
-import logging
-
-# ロギング設定を強化
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
+import json
 
 # --- 設定 ---
 APPLICATION_ID = os.getenv("APPLICATION_ID")
@@ -21,12 +12,19 @@ BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 BASE_URL = "https://laws.e-gov.go.jp/api/2"
 
+# 法令名エイリアス
+ALIASES = {
+    "民法": "民法",
+    "憲法": "日本国憲法",
+    "刑法": "刑法",
+    "商法": "商法",
+    "会社法": "会社法",
+    "民事訴訟法": "民事訴訟法",
+    "刑事訴訟法": "刑事訴訟法",
+}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("=" * 80)
-    logger.info("APPLICATION STARTING")
-    logger.info("=" * 80)
-    
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bot {BOT_TOKEN}"}
 
@@ -36,7 +34,6 @@ async def lifespan(app: FastAPI):
             headers=headers,
             json=[]
         )
-        logger.info("Global commands cleared")
 
         # ギルドコマンド登録
         GUILD_ID = "1467465108690043016"
@@ -64,11 +61,7 @@ async def lifespan(app: FastAPI):
             headers={**headers, "Content-Type": "application/json"},
             json=payload
         )
-        logger.info("Guild command registered")
-    
-    logger.info("Application ready")
     yield
-    logger.info("Application shutting down")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -76,94 +69,212 @@ app = FastAPI(lifespan=lifespan)
 async def root():
     return {"status": "ok"}
 
+def find_article_recursive(data, target_num):
+    """再帰的に条文を検索する関数"""
+    if isinstance(data, dict):
+        # Articlesが見つかった場合
+        if "Articles" in data:
+            articles = data["Articles"]
+            if not isinstance(articles, list):
+                articles = [articles]
+            for art in articles:
+                if art.get("ArticleNum") == str(target_num):
+                    return art
+        
+        # Articleが直接見つかった場合
+        if "Article" in data:
+            article = data["Article"]
+            if isinstance(article, list):
+                for art in article:
+                    if art.get("ArticleNum") == str(target_num):
+                        return art
+            elif isinstance(article, dict):
+                if article.get("ArticleNum") == str(target_num):
+                    return article
+        
+        # 各キーを再帰的に探索
+        for value in data.values():
+            result = find_article_recursive(value, target_num)
+            if result:
+                return result
+    elif isinstance(data, list):
+        for item in data:
+            result = find_article_recursive(item, target_num)
+            if result:
+                return result
+    return None
+
 async def fetch_law_data(token: str, law_name: str, target_no: str):
-    logger.info("=" * 80)
-    logger.info(f"FETCH_LAW_DATA STARTED: law_name='{law_name}', article={target_no}")
-    logger.info("=" * 80)
-    
     async with httpx.AsyncClient() as client:
         try:
-            # Test 1: 直接APIを叩く
-            test_url = "https://laws.e-gov.go.jp/api/2/laws?lawName=民法"
-            logger.info(f"TEST 1: Calling {test_url}")
+            # --- 法令名正規化 ---
+            law_name_original = law_name.strip()
+            law_name = ALIASES.get(law_name_original, law_name_original)
+
+            print(f"\n{'='*60}")
+            print(f"DEBUG: Searching for '{law_name}'")
+            print(f"{'='*60}")
+
+            # 1. 法令検索（Swagger UIの仕様に基づく）
+            headers = {"Accept": "application/json"}
             
-            test_res = await client.get(test_url, timeout=15)
-            logger.info(f"TEST 1: Status={test_res.status_code}")
-            logger.info(f"TEST 1: Content-Type={test_res.headers.get('content-type')}")
-            logger.info(f"TEST 1: Body length={len(test_res.text)}")
-            logger.info(f"TEST 1: Body preview (first 2000 chars):")
-            logger.info(test_res.text[:2000])
+            search_url = f"{BASE_URL}/laws"
+            params = {"lawName": law_name}
             
-            if test_res.status_code == 200:
-                try:
-                    test_json = test_res.json()
-                    logger.info(f"TEST 1: JSON parsed OK")
-                    logger.info(f"TEST 1: JSON structure:")
-                    import json
-                    logger.info(json.dumps(test_json, ensure_ascii=False, indent=2))
-                except Exception as e:
-                    logger.error(f"TEST 1: JSON parsing failed: {e}")
+            print(f"DEBUG: GET {search_url} with params={params}")
             
-            # とりあえずメッセージ送信
-            logger.info("Sending response to Discord")
+            search_res = await client.get(
+                search_url,
+                params=params,
+                headers=headers,
+                timeout=20
+            )
+            
+            print(f"DEBUG: Status={search_res.status_code}")
+            
+            if search_res.status_code != 200:
+                print(f"DEBUG: Error response: {search_res.text[:500]}")
+                raise Exception(f"API returned status {search_res.status_code}")
+            
+            search_data = search_res.json()
+            print(f"DEBUG: Response keys: {list(search_data.keys())}")
+            
+            # Swagger UIによると: {total_count, count, laws}
+            if "laws" not in search_data:
+                print(f"DEBUG: 'laws' key not found in response")
+                raise Exception("APIレスポンスに'laws'キーがありません")
+            
+            laws = search_data["laws"]
+            print(f"DEBUG: Found {len(laws)} law(s)")
+            
+            if len(laws) == 0:
+                raise Exception(f"「{law_name}」に一致する法令が見つかりませんでした")
+            
+            # 最初の法令を取得
+            # 構造: laws[0].law_info.law_id と laws[0].revision_info.law_title
+            first_law = laws[0]
+            print(f"DEBUG: First law structure keys: {list(first_law.keys())}")
+            
+            law_info = first_law.get("law_info", {})
+            revision_info = first_law.get("revision_info", {})
+            
+            law_id = law_info.get("law_id")
+            law_title = revision_info.get("law_title")
+            
+            print(f"DEBUG: law_id={law_id}")
+            print(f"DEBUG: law_title={law_title}")
+            
+            if not law_id:
+                raise Exception("法令IDの取得に失敗しました")
+            
+            if not law_title:
+                law_title = law_name
+
+            # 2. 条文データ取得
+            print(f"\nDEBUG: Fetching lawdata for {law_id}")
+            
+            content_url = f"{BASE_URL}/lawdata/{law_id}"
+            print(f"DEBUG: GET {content_url}")
+            
+            content_res = await client.get(
+                content_url,
+                headers=headers,
+                timeout=25
+            )
+            
+            print(f"DEBUG: Lawdata status={content_res.status_code}")
+            
+            if content_res.status_code != 200:
+                print(f"DEBUG: Error: {content_res.text[:500]}")
+                raise Exception(f"条文データの取得に失敗しました (status={content_res.status_code})")
+            
+            content_data = content_res.json()
+            print(f"DEBUG: Lawdata retrieved")
+
+            # 再帰的に条文を検索
+            print(f"DEBUG: Searching for article {target_no}")
+            article = find_article_recursive(content_data, target_no)
+
+            if article:
+                print(f"DEBUG: Article {target_no} found!")
+                caption = article.get("ArticleCaption", f"第{target_no}条")
+                paragraphs = article.get("Paragraph", [])
+                if not isinstance(paragraphs, list):
+                    paragraphs = [paragraphs]
+
+                lines = []
+                for p in paragraphs:
+                    sentence = p.get("ParagraphSentence", {}).get("Sentence", "")
+                    if isinstance(sentence, dict):
+                        sentence = sentence.get("#text", "")
+                    if sentence:
+                        lines.append(str(sentence))
+
+                display_text = "\n".join(lines) if lines else "（条文の内容が取得できませんでした）"
+            else:
+                print(f"DEBUG: Article {target_no} NOT found")
+                caption = f"第{target_no}条"
+                display_text = "指定された条文が見つかりませんでした。"
+
+            # 3. Discord 応答更新
             await client.patch(
                 f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
                 json={
-                    "content": f"✅ デバッグ実行完了\n検索: {law_name} 第{target_no}条\nサーバーログを確認してください"
+                    "embeds": [{
+                        "title": f"🏛️ {law_title}",
+                        "description": f"### {caption}\n{display_text[:1800]}",
+                        "color": 0x2ECC71,
+                        "footer": {"text": "Powered by e-Gov API v2"}
+                    }]
                 }
             )
-            logger.info("Response sent to Discord")
 
+        except httpx.TimeoutException:
+            print(f"\nDEBUG: Timeout error")
+            await client.patch(
+                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
+                json={"content": "⚠️ タイムアウト: APIの応答に時間がかかりすぎています。"}
+            )
+        except httpx.HTTPStatusError as e:
+            print(f"\nDEBUG: HTTP error: {e.response.status_code}")
+            print(f"DEBUG: Response: {e.response.text[:1000]}")
+            await client.patch(
+                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
+                json={"content": f"⚠️ API エラー: {e.response.status_code}"}
+            )
         except Exception as e:
-            logger.error(f"ERROR in fetch_law_data: {type(e).__name__}: {str(e)}", exc_info=True)
-            try:
-                await client.patch(
-                    f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                    json={"content": f"⚠️ エラー: {str(e)}"}
-                )
-            except:
-                pass
+            print(f"\nDEBUG: Error: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            await client.patch(
+                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
+                json={"content": f"⚠️ {str(e)}"}
+            )
 
 @app.post("/interactions")
 async def interactions(request: Request):
-    logger.info("=" * 80)
-    logger.info("INTERACTION RECEIVED")
-    
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
-    
-    logger.info(f"Signature present: {signature is not None}")
-    logger.info(f"Timestamp present: {timestamp is not None}")
-    
     if not signature or not timestamp:
-        logger.warning("Missing signature or timestamp")
         raise HTTPException(status_code=401)
 
     body = await request.body()
-    logger.info(f"Body length: {len(body)}")
-    
     try:
         VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(
             timestamp.encode() + body,
             bytes.fromhex(signature)
         )
-        logger.info("Signature verified OK")
-    except Exception as e:
-        logger.error(f"Signature verification failed: {e}")
+    except:
         raise HTTPException(status_code=401)
 
     data = await request.json()
-    logger.info(f"Request type: {data.get('type')}")
-    logger.info(f"Full data: {data}")
 
     # PING
     if data.get("type") == 1:
-        logger.info("Responding to PING")
         return {"type": 1}
 
     # SLASH COMMAND
     if data.get("type") == 2:
-        logger.info("Processing SLASH COMMAND")
         token = data["token"]
         options = data["data"].get("options", [])
 
@@ -176,19 +287,13 @@ async def interactions(request: Request):
             elif opt["name"] == "number":
                 target_no = str(opt["value"])
 
-        logger.info(f"Extracted: law_name='{law_name}', target_no='{target_no}'")
-
         if not law_name or not target_no:
-            logger.warning("Missing law_name or target_no")
             return {
                 "type": 4,
                 "data": {"content": "法令名と条文番号を指定してください。"}
             }
 
-        logger.info("Creating async task for fetch_law_data")
         asyncio.create_task(fetch_law_data(token, law_name, target_no))
-        logger.info("Returning deferred response (type 5)")
         return {"type": 5}
 
-    logger.info("Unknown interaction type, returning status ok")
     return {"status": "ok"}
