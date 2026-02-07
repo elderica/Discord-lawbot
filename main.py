@@ -5,56 +5,26 @@ from fastapi import FastAPI, Request, HTTPException
 from nacl.signing import VerifyKey
 from contextlib import asynccontextmanager
 
-# --- 設定 ---
+# --- 設定（環境変数から読み込み） ---
 APPLICATION_ID = os.getenv("APPLICATION_ID")
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 BASE_URL = "https://laws.e-gov.go.jp/api/2"
 
-# 法令名エイリアス
-ALIASES = {
-    "民法": "民法",
-    "憲法": "日本国憲法",
-    "刑法": "刑法",
-    "商法": "商法",
-    "会社法": "会社法",
-    "民事訴訟法": "民事訴訟法",
-    "刑事訴訟法": "刑事訴訟法",
-}
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bot {BOT_TOKEN}"}
-
-        # グローバルコマンドを全削除
-        await client.put(
-            f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands",
-            headers=headers,
-            json=[]
-        )
-
-        # ギルドコマンド登録
+        # Discordスラッシュコマンドの登録
         GUILD_ID = "1467465108690043016"
         payload = {
             "name": "law_search",
             "description": "法令を検索して条文を表示します",
             "options": [
-                {
-                    "name": "name",
-                    "description": "法令名（例：民法、憲法）",
-                    "type": 3,
-                    "required": True
-                },
-                {
-                    "name": "number",
-                    "description": "条文番号（例：1）",
-                    "type": 3,
-                    "required": True
-                }
+                {"name": "name", "description": "法令名（例：民法、国旗国歌法）", "type": 3, "required": True},
+                {"name": "number", "description": "条文番号（例：1）", "type": 3, "required": True}
             ]
         }
-
         await client.post(
             f"https://discord.com/api/v10/applications/{APPLICATION_ID}/guilds/{GUILD_ID}/commands",
             headers={**headers, "Content-Type": "application/json"},
@@ -64,247 +34,119 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-@app.get("/")
-async def root():
-    return {"status": "ok"}
-
-def find_article_in_tree(node, target_num):
-    """ツリー構造から指定番号のArticleを検索"""
-    if isinstance(node, dict):
-        if node.get("tag") == "Article":
-            attr = node.get("attr", {})
-            if attr.get("Num") == str(target_num):
-                return node
-        
-        if "children" in node:
-            result = find_article_in_tree(node["children"], target_num)
-            if result:
-                return result
-    
-    elif isinstance(node, list):
-        for item in node:
-            result = find_article_in_tree(item, target_num)
-            if result:
-                return result
-    
+# --- 1. ツリー構造から対象の条文(Article)を探し出す ---
+def find_article_in_tree(nodes, target_num):
+    if not isinstance(nodes, list):
+        return None
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        # tagが"Article"でNumが一致するか
+        if node.get("tag") == "Article" and str(node.get("attr", {}).get("Num")) == str(target_num):
+            return node
+        # 子要素があればさらに深く探す
+        res = find_article_in_tree(node.get("children"), target_num)
+        if res:
+            return res
     return None
 
-def extract_article_text(article_node):
-    """Articleノードからテキストを抽出"""
+# --- 2. 見つかった条文ノードからテキストを抽出する ---
+def extract_text(node):
     caption = ""
-    paragraphs = []
-    
-    if not isinstance(article_node, dict):
-        return caption, paragraphs
-    
-    children = article_node.get("children", [])
-    
-    for child in children:
-        if not isinstance(child, dict):
-            continue
-        
+    lines = []
+    for child in node.get("children", []):
+        if not isinstance(child, dict): continue
         tag = child.get("tag")
         
+        # 見出し
         if tag == "ArticleCaption":
-            caption_children = child.get("children", [])
-            if caption_children and isinstance(caption_children[0], str):
-                caption = caption_children[0]
+            caption = "".join([str(c) for c in child.get("children", []) if isinstance(c, str)])
         
-        elif tag == "Paragraph":
-            para_text = extract_paragraph_text(child)
-            if para_text:
-                paragraphs.append(para_text)
-    
-    return caption, paragraphs
+        # 段落と本文
+        if tag == "Paragraph":
+            for p_child in child.get("children", []):
+                if not isinstance(p_child, dict): continue
+                # ParagraphSentence または Sentence から文字を拾う
+                if p_child.get("tag") == "ParagraphSentence":
+                    for s_child in p_child.get("children", []):
+                        if isinstance(s_child, dict) and s_child.get("tag") == "Sentence":
+                            text = "".join([str(t) for t in s_child.get("children", []) if isinstance(t, str)])
+                            if text: lines.append(text)
+                elif p_child.get("tag") == "Sentence":
+                    text = "".join([str(t) for t in p_child.get("children", []) if isinstance(t, str)])
+                    if text: lines.append(text)
+    return caption or f"第{node.get('attr', {}).get('Num')}条", lines
 
-def extract_paragraph_text(para_node):
-    """Paragraphノードからテキストを抽出（再帰的）"""
-    if not isinstance(para_node, dict):
-        return ""
-    
-    children = para_node.get("children", [])
-    texts = []
-    
-    for child in children:
-        if isinstance(child, str):
-            texts.append(child)
-        elif isinstance(child, dict):
-            child_children = child.get("children", [])
-            
-            for c in child_children:
-                if isinstance(c, str):
-                    texts.append(c)
-                elif isinstance(c, dict):
-                    sub_text = extract_paragraph_text(c)
-                    if sub_text:
-                        texts.append(sub_text)
-    
-    return "".join(texts)
-
-async def fetch_law_data(token: str, law_name: str, target_no: str):
+# --- 3. メインの非同期処理 ---
+async def fetch_law_data(token, law_name, target_no):
     async with httpx.AsyncClient() as client:
         try:
-            law_name_original = law_name.strip()
-            law_name = ALIASES.get(law_name_original, law_name_original)
+            # A. 法令をキーワード検索
+            s_res = await client.get(f"{BASE_URL}/laws", params={"keyword": law_name}, timeout=15)
+            s_data = s_res.json()
+            laws = s_data.get("laws", [])
+            if not laws:
+                raise Exception(f"「{law_name}」は見つかりませんでした。")
 
-            print(f"\n{'='*60}")
-            print(f"DEBUG: Searching for '{law_name}', article {target_no}")
-            print(f"{'='*60}")
+            # B. IDの抽出（執念のフォールバック付き）
+            target = laws[0]
+            rev_info = target.get("revision_info", {})
+            law_info = target.get("law_info", {})
+            
+            # revision_id(長い) -> law_id(短い) の順で探す
+            law_id_to_query = rev_info.get("law_revision_id") or law_info.get("law_id")
+            law_title = rev_info.get("law_title") or law_info.get("law_name") or law_name
 
-            # 1. 法令検索
-            headers = {"Accept": "application/json"}
-            
-            search_res = await client.get(
-                f"{BASE_URL}/laws",
-                params={"lawName": law_name},
-                headers=headers,
-                timeout=20
-            )
-            
-            print(f"DEBUG: Search status={search_res.status_code}")
-            
-            if search_res.status_code != 200:
-                raise Exception(f"法令検索に失敗しました (status={search_res.status_code})")
-            
-            search_data = search_res.json()
-            
-            if "laws" not in search_data or len(search_data["laws"]) == 0:
-                raise Exception(f"「{law_name}」に一致する法令が見つかりませんでした")
-            
-            first_law = search_data["laws"][0]
-            law_info = first_law.get("law_info", {})
-            revision_info = first_law.get("revision_info", {})
-            
-            law_id = law_info.get("law_id")
-            law_num = law_info.get("law_num")
-            law_revision_id = revision_info.get("law_revision_id")
-            law_title = revision_info.get("law_title", law_name)
-            
-            print(f"DEBUG: law_id={law_id}")
-            print(f"DEBUG: law_num={law_num}")
-            print(f"DEBUG: law_revision_id={law_revision_id}")
-            print(f"DEBUG: law_title={law_title}")
+            if not law_id_to_query:
+                raise Exception("APIから有効な法令IDを取得できませんでした。")
 
-            # 2. 条文データ取得 - クエリパラメータとして指定
-            print(f"\nDEBUG: Fetching lawdata...")
+            # C. 本文の取得（アンダースコアありの正しいパラメータ名を使用）
+            # まずは履歴IDで試す
+            p = {"law_revision_id": law_id_to_query} if "_" in law_id_to_query else {"law_id": law_id_to_query}
+            c_res = await client.get(f"{BASE_URL}/lawdata", params=p, timeout=30)
             
-            # lawIdをクエリパラメータとして使用（最新版を取得）
-            lawdata_url = f"{BASE_URL}/lawdata"
-            params = {"lawId": law_id}
+            if c_res.status_code != 200:
+                raise Exception(f"本文取得失敗 (status={c_res.status_code})")
             
-            print(f"DEBUG: GET {lawdata_url} with params={params}")
-            
-            content_res = await client.get(
-                lawdata_url,
-                params=params,
-                headers=headers,
-                timeout=25
-            )
-            
-            print(f"DEBUG: Lawdata status={content_res.status_code}")
-            
-            if content_res.status_code != 200:
-                print(f"DEBUG: Error response: {content_res.text[:500]}")
-                raise Exception(f"条文データの取得に失敗しました (status={content_res.status_code})")
-            
-            content_data = content_res.json()
-            print(f"DEBUG: Lawdata retrieved successfully")
-            
-            # law_full_textから条文を検索
-            law_full_text = content_data.get("law_full_text", {})
-            
-            print(f"DEBUG: Searching for article {target_no}")
-            article_node = find_article_in_tree(law_full_text, target_no)
-            
+            c_data = c_res.status_code == 200 and c_res.json()
+            root_children = c_data.get("law_full_text", {}).get("children", [])
+
+            # D. 解析とDiscord送信
+            article_node = find_article_in_tree(root_children, target_no)
             if article_node:
-                print(f"DEBUG: ✓ Article {target_no} found!")
-                caption, paragraphs = extract_article_text(article_node)
-                
-                if not caption:
-                    caption = f"第{target_no}条"
-                
-                if paragraphs:
-                    display_text = "\n".join(paragraphs)
-                else:
-                    display_text = "（条文の内容が取得できませんでした）"
+                cap, txts = extract_text(article_node)
+                desc = f"### {cap}\n" + "\n".join(txts)
             else:
-                print(f"DEBUG: ✗ Article {target_no} NOT found")
-                caption = f"第{target_no}条"
-                display_text = "指定された条文が見つかりませんでした。条文番号を確認してください。"
+                desc = f"第{target_no}条は見つかりませんでした。"
 
-            # 3. Discord 応答更新
             await client.patch(
                 f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                json={
-                    "embeds": [{
-                        "title": f"🏛️ {law_title}",
-                        "description": f"### {caption}\n{display_text[:1800]}",
-                        "color": 0x2ECC71,
-                        "footer": {"text": "Powered by e-Gov API v2"}
-                    }]
-                }
-            )
-            
-            print(f"DEBUG: ✓ Response sent to Discord")
-
-        except httpx.TimeoutException:
-            print(f"DEBUG: ✗ Timeout error")
-            await client.patch(
-                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                json={"content": "⚠️ タイムアウト: APIの応答に時間がかかりすぎています。"}
+                json={"embeds": [{"title": f"🏛️ {law_title}", "description": desc[:1900], "color": 0x2ECC71, "footer": {"text": "Powered by e-Gov API v2"}}]}
             )
         except Exception as e:
-            print(f"DEBUG: ✗ Error: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
             await client.patch(
                 f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                json={"content": f"⚠️ {str(e)}"}
+                json={"content": f"⚠️ エラー: {str(e)}"}
             )
 
+# --- 4. Discord Interaction 受け口 ---
 @app.post("/interactions")
 async def interactions(request: Request):
-    signature = request.headers.get("X-Signature-Ed25519")
-    timestamp = request.headers.get("X-Signature-Timestamp")
-    if not signature or not timestamp:
-        raise HTTPException(status_code=401)
-
+    sig = request.headers.get("X-Signature-Ed25519")
+    ts = request.headers.get("X-Signature-Timestamp")
     body = await request.body()
     try:
-        VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(
-            timestamp.encode() + body,
-            bytes.fromhex(signature)
-        )
+        VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(ts.encode() + body, bytes.fromhex(sig))
     except:
         raise HTTPException(status_code=401)
-
+    
     data = await request.json()
-
-    # PING
     if data.get("type") == 1:
         return {"type": 1}
-
-    # SLASH COMMAND
+    
     if data.get("type") == 2:
-        token = data["token"]
-        options = data["data"].get("options", [])
-
-        law_name = None
-        target_no = None
-
-        for opt in options:
-            if opt["name"] == "name":
-                law_name = opt["value"]
-            elif opt["name"] == "number":
-                target_no = str(opt["value"])
-
-        if not law_name or not target_no:
-            return {
-                "type": 4,
-                "data": {"content": "法令名と条文番号を指定してください。"}
-            }
-
-        asyncio.create_task(fetch_law_data(token, law_name, target_no))
-        return {"type": 5}
-
+        opts = {o["name"]: o["value"] for o in data["data"].get("options", [])}
+        asyncio.create_task(fetch_law_data(data["token"], opts.get("name"), opts.get("number")))
+        return {"type": 5} # 「考え中...」を表示
+    
     return {"status": "ok"}
