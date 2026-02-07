@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
         payload = {
             "name": "law",
             "description": "日本国憲法を表示します(v2)",
-            "options": [{"name": "number", "description": "条文番号（例：9）", "type": 3, "required": False}]
+            "options": [{"name": "number", "description": "条文番号（例：9）", "type": 3, "required": True}]
         }
         await client.post(url, headers=headers, json=payload)
     yield
@@ -33,52 +33,23 @@ app = FastAPI(lifespan=lifespan)
 async def root():
     return {"status": "ok"}
 
-# --- v2 JSON解析ロジック ---
-async def fetch_v2_and_edit_response(token, target_no):
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(LAW_API_V2, timeout=15)
-            res.raise_for_status()
-            data = res.json()
-            
-            # v2の階層を掘る
-            articles = data.get("law_full_text", {}).get("LawBody", {}).get("MainProvision", {}).get("Articles", [])
-            
-            title = f"🏛️ 日本国憲法 第{target_no}条"
-            display_text = "条文が見つかりませんでした。"
+# --- Discordからのリクエスト受け取り口 ---
+@app.post("/interactions")
+async def interactions(request: Request):
+    # 署名検証
+    signature = request.headers.get("X-Signature-Ed25519")
+    timestamp = request.headers.get("X-Signature-Timestamp")
+    body = await request.body()
+    
+    verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY))
+    try:
+        verify_key.verify(timestamp.encode() + body, bytes.fromhex(signature))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid request signature")
 
-            for art in articles:
-                # v2は article_num が "9" のように数字文字列で来るのでそのまま比較可能
-                if art.get("article_num") == str(target_no):
-                    caption = art.get("article_caption", "")
-                    paragraphs = art.get("paragraphs", [])
-                    para_texts = []
-                    for p in paragraphs:
-                        sentences = p.get("sentences", [])
-                        text = "".join([s.get("sentence_text", "") for s in sentences])
-                        # 項番号があれば振る
-                        p_num = p.get("paragraph_num", "")
-                        if p_num and p_num != "1":
-                            para_texts.append(f"{p_num} {text}")
-                        else:
-                            para_texts.append(text)
-                    
-                    display_text = f"**{caption}**\n\n" + "\n".join(para_texts)
-                    break
-            
-            # Discordへ反映
-            patch_url = f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original"
-            payload = {
-                "embeds": [{
-                    "title": title,
-                    "description": display_text[:1800],
-                    "color": 0x3498DB,
-                    "footer": {"text": "e-Gov API v2 (JSON) / Koyeb Hosting"}
-                }]
-            }
-            await client.patch(patch_url, json=payload)
-        except Exception as e:
-            print(f"Error: {e}")
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    data = await request.json()
+    
+    # Ping (Discordからの接続確認)
+    if data.get("type") == 1:
+        return {"type": 1}
+
