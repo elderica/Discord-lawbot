@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
         guild_url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/guilds/{GUILD_ID}/commands"
         
         payload = {
-            "name": "lawsearch", 
+            "name": "law_search", 
             "description": "法令を検索して条文を表示します",
             "options": [
                 {"name": "name", "description": "法令名（例：民法）", "type": 3, "required": True},
