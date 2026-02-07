@@ -14,23 +14,21 @@ BASE_URL = "https://laws.e-gov.go.jp/api/2"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with httpx.AsyncClient() as client:
-        # 1. まず「古いグローバルコマンド」を全削除する
+        # 古い設定を一度お掃除
         headers = {"Authorization": f"Bot {BOT_TOKEN}"}
         global_url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
-        
-        # 空のリストを PUT することで、既存のグローバルコマンドをすべて消せます
         await client.put(global_url, headers=headers, json=[])
         
-        # 2. その後、改めて「ギルドコマンド（サーバー専用）」として登録する
+        # 名前を「lawsearch」にして新規登録
         GUILD_ID = "1467465108690043016"
         guild_url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/guilds/{GUILD_ID}/commands"
         
         payload = {
-            "name": "laws",
-            "description": "日本の法令を検索して条文を表示します",
+            "name": "lawsearch", 
+            "description": "法令を検索して条文を表示します",
             "options": [
-                {"name": "name", "description": "法令名（例：民法、刑法、日本国憲法）", "type": 3, "required": True},
-                {"name": "number", "description": "条文番号（例：1、9、204）", "type": 3, "required": True}
+                {"name": "name", "description": "法令名（例：民法）", "type": 3, "required": True},
+                {"name": "number", "description": "条文番号（例：1）", "type": 3, "required": True}
             ]
         }
         await client.post(guild_url, headers={"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}, json=payload)
