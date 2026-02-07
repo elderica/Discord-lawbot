@@ -14,7 +14,8 @@ BASE_URL = "https://laws.e-gov.go.jp/api/2"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with httpx.AsyncClient() as client:
-        url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
+        GUILD_ID = "1467465108690043016"
+        url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/guilds/{GUILD_ID}/commands"
         headers = {"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}
         payload = {
             "name": "law",
