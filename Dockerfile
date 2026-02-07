@@ -1,16 +1,15 @@
-# 1. 最小限のPython環境（slim）を使う（メモリ節約の基本）
-FROM python:3.11-slim
+# 1. フルセットのPython 3.11（全部入り）を使う
+FROM python:3.11
 
-# 2. コンテナ内の作業ディレクトリを決定
+# 2. 作業ディレクトリ設定
 WORKDIR /app
 
-# 3. 依存関係のインストール（ここがエラーの温床）
-# まず requirements.txt だけコピーしてキャッシュを効かせる
+# 3. 依存関係のインストール
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 残りのコードをコピー
+# 4. コードをコピー
 COPY . .
 
-# 5. 実行（main.py はあなたのファイル名に合わせてください）
+# 5. 実行
 CMD ["python", "main.py"]

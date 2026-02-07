@@ -1,6 +1,4 @@
 fastapi
 uvicorn
 pynacl
-requests
-beautifulsoup4
-lxml
+httpx
