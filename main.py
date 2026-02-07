@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 APPLICATION_ID = os.getenv("APPLICATION_ID")
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
-LAW_API_V2 = "https://laws.e-gov.go.jp/api/2/lawdata/321CONSTITUTION"
+LAW_API_V2 = "https://laws.e-gov.go.jp/api/2/lawdata/321CONSTITUTION.json"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
