@@ -3,14 +3,13 @@ import asyncio
 import httpx
 from fastapi import FastAPI, Request, HTTPException
 from nacl.signing import VerifyKey
-import uvicorn
 from contextlib import asynccontextmanager
 
-# --- 設定（環境変数） ---
+# --- 設定 ---
 APPLICATION_ID = os.getenv("APPLICATION_ID")
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
-LAW_API_V2 = "https://laws.e-gov.go.jp/api/2/lawdata/321CONSTITUTION.json"
+BASE_URL = "https://laws.e-gov.go.jp/api/2"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,8 +18,11 @@ async def lifespan(app: FastAPI):
         headers = {"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}
         payload = {
             "name": "law",
-            "description": "日本国憲法を表示します(v2)",
-            "options": [{"name": "number", "description": "条文番号（例：9）", "type": 3, "required": True}]
+            "description": "法令を検索します",
+            "options": [
+                {"name": "name", "description": "法令名（例：民法、刑法）", "type": 3, "required": True},
+                {"name": "number", "description": "条文番号（例：1）", "type": 3, "required": True}
+            ]
         }
         await client.post(url, headers=headers, json=payload)
     yield
@@ -28,91 +30,92 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
-async def root():
-    return {"status": "ok"}
+async def root(): return {"status": "ok"}
 
-# --- v2 JSON解析 & メッセージ更新ロジック ---
-async def fetch_v2_and_edit_response(token, target_no):
+async def fetch_law_data(token, law_name, target_no):
     async with httpx.AsyncClient() as client:
         try:
-            # e-Gov APIからデータ取得 (タイムアウトを長めに)
-            res = await client.get(LAW_API_V2, timeout=30)
-            res.raise_for_status()
-            data = res.json()
+            # 1. 法令名から LawId を検索
+            search_res = await client.get(f"{BASE_URL}/laws?lawName={law_name}", timeout=10)
+            search_data = search_res.json()
+            law_infos = search_data.get("result", {}).get("law_infos", [])
             
-            articles = data.get("law_full_text", {}).get("LawBody", {}).get("MainProvision", {}).get("Articles", [])
-            title = f"🏛️ 日本国憲法 第{target_no}条"
-            display_text = "指定された条文が見つかりませんでした。"
+            if not law_infos:
+                raise Exception(f"「{law_name}」が見つかりませんでした。正式名称で試してください。")
+            
+            law_id = law_infos[0].get("law_id")
+            law_title = law_infos[0].get("law_name")
 
-            for art in articles:
-                if art.get("article_num") == str(target_no):
-                    caption = art.get("article_caption", "")
-                    paragraphs = art.get("paragraphs", [])
-                    para_texts = []
-                    for p in paragraphs:
-                        sentences = p.get("sentences", [])
-                        text = "".join([s.get("sentence_text", "") for s in sentences])
-                        p_num = p.get("paragraph_num", "")
-                        if p_num and p_num != "1":
-                            para_texts.append(f"{p_num} {text}")
-                        else:
-                            para_texts.append(text)
-                    display_text = f"**{caption}**\n\n" + "\n".join(para_texts)
-                    break
+            # 2. LawId を使って条文データを取得
+            content_res = await client.get(f"{BASE_URL}/lawdata?lawId={law_id}", timeout=20)
+            content_data = content_res.json()
             
-            # 「考え中...」だったメッセージを編集(PATCH)して表示
+            # API v2 の深い階層を掘り進む
+            law_full_text = content_data.get("result", {}).get("law_full_text", {})
+            # Articles（条文リスト）を探す（法律によって階層が微妙に異なるため柔軟に取得）
+            law_body = law_full_text.get("Law", {}).get("LawBody", {})
+            main_provision = law_body.get("MainProvision", {})
+            
+            # 階層が「章」などで分かれている場合もあるが、まずは直下のArticlesを探す
+            articles = main_provision.get("Articles", [])
+            
+            display_text = f"第{target_no}条が見つかりませんでした。"
+            for art in articles:
+                if art.get("ArticleNum") == str(target_no):
+                    caption = art.get("ArticleCaption", "")
+                    # 段落の抽出
+                    paragraphs = art.get("Paragraph", [])
+                    if not isinstance(paragraphs, list): paragraphs = [paragraphs]
+                    
+                    lines = []
+                    for p in paragraphs:
+                        sentence = p.get("ParagraphSentence", {}).get("Sentence", "")
+                        if isinstance(sentence, dict): sentence = sentence.get("#text", "")
+                        lines.append(str(sentence))
+                    
+                    display_text = f"**{caption}**\n\n" + "\n".join(lines)
+                    break
+
+            # 3. Discordに結果を返す
             patch_url = f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original"
-            payload = {
+            await client.patch(patch_url, json={
                 "embeds": [{
-                    "title": title,
+                    "title": f"🏛️ {law_title} 第{target_no}条",
                     "description": display_text[:1900],
-                    "color": 0x3498DB
+                    "color": 0x2ECC71
                 }]
-            }
-            await client.patch(patch_url, json=payload)
+            })
 
         except Exception as e:
-            print(f"Error: {e}")
             patch_url = f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original"
-            await client.patch(patch_url, json={"content": f"エラーが発生しました: {e}"})
+            await client.patch(patch_url, json={"content": f"エラー: {str(e)}"})
 
 @app.post("/interactions")
 async def interactions(request: Request):
+    # 署名検証 (ここはそのまま)
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
     body = await request.body()
-    
-    # 署名検証
     verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY))
     try:
         verify_key.verify(timestamp.encode() + body, bytes.fromhex(signature))
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid request signature")
+    except:
+        raise HTTPException(status_code=401)
 
     data = await request.json()
-    
-    # 1. Pingへの応答
-    if data.get("type") == 1:
-        return {"type": 1}
+    if data.get("type") == 1: return {"type": 1}
 
-    # 2. スラッシュコマンドへの応答
     if data.get("type") == 2:
         token = data.get("token")
         options = data.get("data", {}).get("options", [])
-        target_no = "1"
-        for opt in options:
-            if opt.get("name") == "number":
-                target_no = str(opt.get("value"))
-
-        # 【ここが重要】バックグラウンドで処理を開始し、Discordには「考え中...」と即レスする
-        asyncio.create_task(fetch_v2_and_edit_response(token, target_no))
         
-        return {
-            "type": 5  # DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
-        }
+        # 入力値を取得
+        args = {opt["name"]: opt["value"] for opt in options}
+        law_name = args.get("name")
+        target_no = str(args.get("number"))
+
+        # 非同期タスク開始
+        asyncio.create_task(fetch_law_data(token, law_name, target_no))
+        return {"type": 5}
 
     return {"status": "ok"}
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
