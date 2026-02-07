@@ -1,10 +1,19 @@
 import os
 import asyncio
 import httpx
+import sys
 from fastapi import FastAPI, Request, HTTPException
 from nacl.signing import VerifyKey
 from contextlib import asynccontextmanager
-import json
+import logging
+
+# ロギング設定を強化
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 # --- 設定 ---
 APPLICATION_ID = os.getenv("APPLICATION_ID")
@@ -12,19 +21,12 @@ BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 BASE_URL = "https://laws.e-gov.go.jp/api/2"
 
-# 法令名エイリアス
-ALIASES = {
-    "民法": "民法",
-    "憲法": "日本国憲法",
-    "刑法": "刑法",
-    "商法": "商法",
-    "会社法": "会社法",
-    "民事訴訟法": "民事訴訟法",
-    "刑事訴訟法": "刑事訴訟法",
-}
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("=" * 80)
+    logger.info("APPLICATION STARTING")
+    logger.info("=" * 80)
+    
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bot {BOT_TOKEN}"}
 
@@ -34,6 +36,7 @@ async def lifespan(app: FastAPI):
             headers=headers,
             json=[]
         )
+        logger.info("Global commands cleared")
 
         # ギルドコマンド登録
         GUILD_ID = "1467465108690043016"
@@ -61,7 +64,11 @@ async def lifespan(app: FastAPI):
             headers={**headers, "Content-Type": "application/json"},
             json=payload
         )
+        logger.info("Guild command registered")
+    
+    logger.info("Application ready")
     yield
+    logger.info("Application shutting down")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -69,133 +76,94 @@ app = FastAPI(lifespan=lifespan)
 async def root():
     return {"status": "ok"}
 
-def find_article_recursive(data, target_num):
-    """再帰的に条文を検索する関数"""
-    if isinstance(data, dict):
-        # Articlesが見つかった場合
-        if "Articles" in data:
-            articles = data["Articles"]
-            if not isinstance(articles, list):
-                articles = [articles]
-            for art in articles:
-                if art.get("ArticleNum") == str(target_num):
-                    return art
-        
-        # Articleが直接見つかった場合
-        if "Article" in data:
-            article = data["Article"]
-            if isinstance(article, list):
-                for art in article:
-                    if art.get("ArticleNum") == str(target_num):
-                        return art
-            elif isinstance(article, dict):
-                if article.get("ArticleNum") == str(target_num):
-                    return article
-        
-        # 各キーを再帰的に探索
-        for value in data.values():
-            result = find_article_recursive(value, target_num)
-            if result:
-                return result
-    elif isinstance(data, list):
-        for item in data:
-            result = find_article_recursive(item, target_num)
-            if result:
-                return result
-    return None
-
-async def fetch_law_data(token, law_name, target_no):
+async def fetch_law_data(token: str, law_name: str, target_no: str):
+    logger.info("=" * 80)
+    logger.info(f"FETCH_LAW_DATA STARTED: law_name='{law_name}', article={target_no}")
+    logger.info("=" * 80)
+    
     async with httpx.AsyncClient() as client:
         try:
-            # 1. キーワード検索（ヒット率重視）
-            search_res = await client.get(f"{BASE_URL}/laws", params={"keyword": law_name}, timeout=15)
-            search_data = search_res.json()
+            # Test 1: 直接APIを叩く
+            test_url = "https://laws.e-gov.go.jp/api/2/laws?lawName=民法"
+            logger.info(f"TEST 1: Calling {test_url}")
             
-            # API v2 の検索結果から law_infos を安全に取得
-            result = search_data.get("result", {})
-            law_infos = result.get("law_infos")
-
-            # law_infos がリストでない（1件だけの場合など）に対応
-            if isinstance(law_infos, dict):
-                law_infos = [law_infos]
-            elif not isinstance(law_infos, list) or len(law_infos) == 0:
-                raise Exception(f"「{law_name}」に一致する法令が見つかりませんでした。")
-
-            # 最初の1件を使用
-            law_id = law_infos[0].get("law_id")
-            law_title = law_infos[0].get("law_name")
+            test_res = await client.get(test_url, timeout=15)
+            logger.info(f"TEST 1: Status={test_res.status_code}")
+            logger.info(f"TEST 1: Content-Type={test_res.headers.get('content-type')}")
+            logger.info(f"TEST 1: Body length={len(test_res.text)}")
+            logger.info(f"TEST 1: Body preview (first 2000 chars):")
+            logger.info(test_res.text[:2000])
             
-            if not law_id:
-                raise Exception("法令IDの特定に失敗しました。")
+            if test_res.status_code == 200:
+                try:
+                    test_json = test_res.json()
+                    logger.info(f"TEST 1: JSON parsed OK")
+                    logger.info(f"TEST 1: JSON structure:")
+                    import json
+                    logger.info(json.dumps(test_json, ensure_ascii=False, indent=2))
+                except Exception as e:
+                    logger.error(f"TEST 1: JSON parsing failed: {e}")
+            
+            # とりあえずメッセージ送信
+            logger.info("Sending response to Discord")
+            await client.patch(
+                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
+                json={
+                    "content": f"✅ デバッグ実行完了\n検索: {law_name} 第{target_no}条\nサーバーログを確認してください"
+                }
+            )
+            logger.info("Response sent to Discord")
 
-            # 2. 条文データ取得
-            content_res = await client.get(f"{BASE_URL}/lawdata", params={"lawId": law_id}, timeout=25)
-            content_data = content_res.json()
-
-            # 3. 再帰検索で条文を特定（前の find_article 関数を使用）
-            article = find_article(content_data, target_no)
-
-            if article:
-                caption = article.get("ArticleCaption", f"第{target_no}条")
-                # 文字列か辞書(#text)かを判定して抽出
-                lines = []
-                paragraphs = article.get("Paragraph", [])
-                if not isinstance(paragraphs, list): paragraphs = [paragraphs]
-                
-                for p in paragraphs:
-                    sentence_data = p.get("ParagraphSentence", {}).get("Sentence")
-                    # sentence_dataがリスト、辞書、文字列のどれでも対応
-                    if isinstance(sentence_data, list):
-                        for s in sentence_data:
-                            text = s.get("#text", s) if isinstance(s, dict) else s
-                            if text: lines.append(str(text))
-                    elif isinstance(sentence_data, dict):
-                        text = sentence_data.get("#text", "")
-                        if text: lines.append(str(text))
-                    elif sentence_data:
-                        lines.append(str(sentence_data))
-                        
-                display_text = "\n".join(lines)
-            else:
-                caption, display_text = f"第{target_no}条", "指定された条文が見つかりませんでした。"
-
-            # 4. Discordに結果を返す
-            await client.patch(f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                               json={
-                                   "embeds": [{
-                                       "title": f"🏛️ {law_title}",
-                                       "description": f"### {caption}\n{display_text[:1800]}",
-                                       "color": 0x2ECC71,
-                                       "footer": {"text": "Powered by e-Gov API v2"}
-                                   }]
-                               })
         except Exception as e:
-            await client.patch(f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                               json={"content": f"⚠️ エラーが発生しました: {str(e)}"})
+            logger.error(f"ERROR in fetch_law_data: {type(e).__name__}: {str(e)}", exc_info=True)
+            try:
+                await client.patch(
+                    f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
+                    json={"content": f"⚠️ エラー: {str(e)}"}
+                )
+            except:
+                pass
+
 @app.post("/interactions")
 async def interactions(request: Request):
+    logger.info("=" * 80)
+    logger.info("INTERACTION RECEIVED")
+    
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
+    
+    logger.info(f"Signature present: {signature is not None}")
+    logger.info(f"Timestamp present: {timestamp is not None}")
+    
     if not signature or not timestamp:
+        logger.warning("Missing signature or timestamp")
         raise HTTPException(status_code=401)
 
     body = await request.body()
+    logger.info(f"Body length: {len(body)}")
+    
     try:
         VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(
             timestamp.encode() + body,
             bytes.fromhex(signature)
         )
-    except:
+        logger.info("Signature verified OK")
+    except Exception as e:
+        logger.error(f"Signature verification failed: {e}")
         raise HTTPException(status_code=401)
 
     data = await request.json()
+    logger.info(f"Request type: {data.get('type')}")
+    logger.info(f"Full data: {data}")
 
     # PING
     if data.get("type") == 1:
+        logger.info("Responding to PING")
         return {"type": 1}
 
     # SLASH COMMAND
     if data.get("type") == 2:
+        logger.info("Processing SLASH COMMAND")
         token = data["token"]
         options = data["data"].get("options", [])
 
@@ -208,13 +176,19 @@ async def interactions(request: Request):
             elif opt["name"] == "number":
                 target_no = str(opt["value"])
 
+        logger.info(f"Extracted: law_name='{law_name}', target_no='{target_no}'")
+
         if not law_name or not target_no:
+            logger.warning("Missing law_name or target_no")
             return {
                 "type": 4,
                 "data": {"content": "法令名と条文番号を指定してください。"}
             }
 
+        logger.info("Creating async task for fetch_law_data")
         asyncio.create_task(fetch_law_data(token, law_name, target_no))
+        logger.info("Returning deferred response (type 5)")
         return {"type": 5}
 
+    logger.info("Unknown interaction type, returning status ok")
     return {"status": "ok"}
