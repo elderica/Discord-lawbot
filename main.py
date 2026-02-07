@@ -14,9 +14,17 @@ BASE_URL = "https://laws.e-gov.go.jp/api/2"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with httpx.AsyncClient() as client:
+        # 1. まず「古いグローバルコマンド」を全削除する
+        headers = {"Authorization": f"Bot {BOT_TOKEN}"}
+        global_url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
+        
+        # 空のリストを PUT することで、既存のグローバルコマンドをすべて消せます
+        await client.put(global_url, headers=headers, json=[])
+        
+        # 2. その後、改めて「ギルドコマンド（サーバー専用）」として登録する
         GUILD_ID = "1467465108690043016"
-        url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/guilds/{GUILD_ID}/commands"
-        headers = {"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}
+        guild_url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/guilds/{GUILD_ID}/commands"
+        
         payload = {
             "name": "law",
             "description": "日本の法令を検索して条文を表示します",
@@ -25,9 +33,8 @@ async def lifespan(app: FastAPI):
                 {"name": "number", "description": "条文番号（例：1、9、204）", "type": 3, "required": True}
             ]
         }
-        await client.post(url, headers=headers, json=payload)
+        await client.post(guild_url, headers={"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}, json=payload)
     yield
-
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
