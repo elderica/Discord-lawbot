@@ -104,203 +104,74 @@ def find_article_recursive(data, target_num):
                 return result
     return None
 
-async def fetch_law_data(token: str, law_name: str, target_no: str):
+async def fetch_law_data(token, law_name, target_no):
     async with httpx.AsyncClient() as client:
         try:
-            # --- 法令名正規化 ---
-            law_name_original = law_name.strip()
-            law_name = ALIASES.get(law_name_original, law_name_original)
+            # 1. キーワード検索（ヒット率重視）
+            search_res = await client.get(f"{BASE_URL}/laws", params={"keyword": law_name}, timeout=15)
+            search_data = search_res.json()
+            
+            # API v2 の検索結果から law_infos を安全に取得
+            result = search_data.get("result", {})
+            law_infos = result.get("law_infos")
 
-            print(f"\n{'='*60}")
-            print(f"DEBUG: Searching for '{law_name}'")
-            print(f"{'='*60}")
-
-            # 1. 法令検索 (Swagger UIによると Accept: application/json が必要)
-            headers = {
-                "Accept": "application/json"
-            }
-            
-            # パラメータ名は lawName ではなく law_name の可能性もあるので両方試す
-            params_attempts = [
-                {"law_name": law_name},
-                {"lawName": law_name},
-                {"law_title": law_name},
-                {"lawTitle": law_name},
-            ]
-            
-            law_infos = []
-            for params in params_attempts:
-                if law_infos:
-                    break
-                
-                print(f"\nDEBUG: Trying params={params}")
-                search_url = f"{BASE_URL}/laws"
-                
-                try:
-                    search_res = await client.get(
-                        search_url,
-                        params=params,
-                        headers=headers,
-                        timeout=20
-                    )
-                    
-                    print(f"DEBUG: Status={search_res.status_code}")
-                    print(f"DEBUG: URL={search_res.url}")
-                    
-                    if search_res.status_code == 200:
-                        search_data = search_res.json()
-                        print(f"DEBUG: Response keys: {list(search_data.keys())}")
-                        
-                        if "laws" in search_data:
-                            law_infos = search_data["laws"]
-                            print(f"DEBUG: Found {len(law_infos)} laws in 'laws' key")
-                        elif "result" in search_data:
-                            result = search_data["result"]
-                            if "laws" in result:
-                                law_infos = result["laws"]
-                                print(f"DEBUG: Found {len(law_infos)} laws in 'result.laws'")
-                            elif "law_infos" in result:
-                                law_infos = result["law_infos"]
-                                print(f"DEBUG: Found {len(law_infos)} laws in 'result.law_infos'")
-                        
-                        if law_infos:
-                            break
-                        else:
-                            print(f"DEBUG: No laws found, response:")
-                            print(json.dumps(search_data, ensure_ascii=False, indent=2)[:1000])
-                    else:
-                        print(f"DEBUG: Non-200 status: {search_res.text[:500]}")
-                        
-                except Exception as e:
-                    print(f"DEBUG: Exception with params {params}: {e}")
-                    continue
-            
-            if not law_infos:
-                raise Exception(f"「{law_name}」が見つかりませんでした。APIが応答していますがデータが空です。")
-            
-            # 法令IDを取得
-            law_id = None
-            law_title = None
-            
-            if not isinstance(law_infos, list):
+            # law_infos がリストでない（1件だけの場合など）に対応
+            if isinstance(law_infos, dict):
                 law_infos = [law_infos]
-            
-            for law_info in law_infos:
-                print(f"DEBUG: Law info keys: {list(law_info.keys())}")
-                
-                # 様々なキー名に対応
-                possible_id_keys = ["law_id", "lawId", "LawId", "id"]
-                possible_name_keys = ["law_name", "lawName", "LawName", "name", "title"]
-                
-                for id_key in possible_id_keys:
-                    if id_key in law_info:
-                        law_id = law_info[id_key]
-                        break
-                
-                for name_key in possible_name_keys:
-                    if name_key in law_info:
-                        law_title = law_info[name_key]
-                        break
-                
-                if law_id and law_title:
-                    print(f"DEBUG: Found: {law_title} (ID: {law_id})")
-                    break
+            elif not isinstance(law_infos, list) or len(law_infos) == 0:
+                raise Exception(f"「{law_name}」に一致する法令が見つかりませんでした。")
+
+            # 最初の1件を使用
+            law_id = law_infos[0].get("law_id")
+            law_title = law_infos[0].get("law_name")
             
             if not law_id:
-                raise Exception("法令IDの取得に失敗しました。")
+                raise Exception("法令IDの特定に失敗しました。")
 
             # 2. 条文データ取得
-            print(f"\nDEBUG: Fetching lawdata for {law_id}")
-            
-            # lawdataのエンドポイントも複数の可能性を試す
-            lawdata_attempts = [
-                f"{BASE_URL}/lawdata/{law_id}",
-                f"{BASE_URL}/lawdata?lawId={law_id}",
-                f"{BASE_URL}/lawdata?law_id={law_id}",
-            ]
-            
-            content_data = None
-            for lawdata_url in lawdata_attempts:
-                try:
-                    print(f"DEBUG: Trying {lawdata_url}")
-                    content_res = await client.get(
-                        lawdata_url,
-                        headers=headers,
-                        timeout=25
-                    )
-                    
-                    if content_res.status_code == 200:
-                        content_data = content_res.json()
-                        print(f"DEBUG: Lawdata retrieved successfully")
-                        break
-                    else:
-                        print(f"DEBUG: Status {content_res.status_code}")
-                except Exception as e:
-                    print(f"DEBUG: Failed: {e}")
-                    continue
-            
-            if not content_data:
-                raise Exception("条文データの取得に失敗しました。")
+            content_res = await client.get(f"{BASE_URL}/lawdata", params={"lawId": law_id}, timeout=25)
+            content_data = content_res.json()
 
-            # 再帰的に条文を検索
-            article = find_article_recursive(content_data, target_no)
+            # 3. 再帰検索で条文を特定（前の find_article 関数を使用）
+            article = find_article(content_data, target_no)
 
             if article:
-                print(f"DEBUG: Article {target_no} found!")
                 caption = article.get("ArticleCaption", f"第{target_no}条")
-                paragraphs = article.get("Paragraph", [])
-                if not isinstance(paragraphs, list):
-                    paragraphs = [paragraphs]
-
+                # 文字列か辞書(#text)かを判定して抽出
                 lines = []
+                paragraphs = article.get("Paragraph", [])
+                if not isinstance(paragraphs, list): paragraphs = [paragraphs]
+                
                 for p in paragraphs:
-                    sentence = p.get("ParagraphSentence", {}).get("Sentence", "")
-                    if isinstance(sentence, dict):
-                        sentence = sentence.get("#text", "")
-                    if sentence:
-                        lines.append(str(sentence))
-
-                display_text = "\n".join(lines) if lines else "（条文の内容が取得できませんでした）"
+                    sentence_data = p.get("ParagraphSentence", {}).get("Sentence")
+                    # sentence_dataがリスト、辞書、文字列のどれでも対応
+                    if isinstance(sentence_data, list):
+                        for s in sentence_data:
+                            text = s.get("#text", s) if isinstance(s, dict) else s
+                            if text: lines.append(str(text))
+                    elif isinstance(sentence_data, dict):
+                        text = sentence_data.get("#text", "")
+                        if text: lines.append(str(text))
+                    elif sentence_data:
+                        lines.append(str(sentence_data))
+                        
+                display_text = "\n".join(lines)
             else:
-                print(f"DEBUG: Article {target_no} NOT found")
-                caption = f"第{target_no}条"
-                display_text = "指定された条文が見つかりませんでした。"
+                caption, display_text = f"第{target_no}条", "指定された条文が見つかりませんでした。"
 
-            # 3. Discord 応答更新
-            await client.patch(
-                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                json={
-                    "embeds": [{
-                        "title": f"🏛️ {law_title}",
-                        "description": f"### {caption}\n{display_text[:1800]}",
-                        "color": 0x2ECC71,
-                        "footer": {"text": "Powered by e-Gov API v2"}
-                    }]
-                }
-            )
-
-        except httpx.TimeoutException:
-            print(f"\nDEBUG: Timeout error")
-            await client.patch(
-                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                json={"content": "⚠️ タイムアウト: APIの応答に時間がかかりすぎています。"}
-            )
-        except httpx.HTTPStatusError as e:
-            print(f"\nDEBUG: HTTP error: {e.response.status_code}")
-            print(f"DEBUG: Response: {e.response.text[:1000]}")
-            await client.patch(
-                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                json={"content": f"⚠️ API エラー: {e.response.status_code}"}
-            )
+            # 4. Discordに結果を返す
+            await client.patch(f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
+                               json={
+                                   "embeds": [{
+                                       "title": f"🏛️ {law_title}",
+                                       "description": f"### {caption}\n{display_text[:1800]}",
+                                       "color": 0x2ECC71,
+                                       "footer": {"text": "Powered by e-Gov API v2"}
+                                   }]
+                               })
         except Exception as e:
-            print(f"\nDEBUG: Error: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            await client.patch(
-                f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
-                json={"content": f"⚠️ {str(e)}"}
-            )
-
+            await client.patch(f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original",
+                               json={"content": f"⚠️ エラーが発生しました: {str(e)}"})
 @app.post("/interactions")
 async def interactions(request: Request):
     signature = request.headers.get("X-Signature-Ed25519")
