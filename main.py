@@ -1,149 +1,81 @@
-from bs4 import BeautifulSoup
-import requests
 import os
-import re
 import asyncio
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from nacl.signing import VerifyKey
+import uvicorn
+from contextlib import asynccontextmanager
 
-app = FastAPI()
-
+# --- 設定（環境変数） ---
 APPLICATION_ID = os.getenv("APPLICATION_ID")
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
+LAW_API_V2 = "https://elaws.e-gov.go.jp/api/2/lawdata/321CONSTITUTION"
 
-def to_kanji(n):
-    try:
-        n = int(n)
-        kanji = {0:'', 1:'一', 2:'二', 3:'三', 4:'四', 5:'五', 
-                 6:'六', 7:'七', 8:'八', 9:'九', 10:'十'}
-        if n <= 10: 
-            return kanji[n]
-        if n < 20: 
-            return "十" + kanji[n % 10]
-        if n < 100: 
-            return kanji[n // 10] + "十" + kanji[n % 10]
-        return str(n)
-    except: 
-        return str(n)
+# --- 起動時の処理 (Lifespan) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 起動時にスラッシュコマンドをDiscordに登録
+    async with httpx.AsyncClient() as client:
+        url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
+        headers = {"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}
+        payload = {
+            "name": "law",
+            "description": "日本国憲法を表示します(v2)",
+            "options": [{"name": "number", "description": "条文番号（例：9）", "type": 3, "required": False}]
+        }
+        await client.post(url, headers=headers, json=payload)
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
     return {"status": "ok"}
 
-async def fetch_and_edit_response(token, target_no):
-    try:
-        res = requests.get(
-            "https://elaws.e-gov.go.jp/api/1/lawdata/321CONSTITUTION",
-            timeout=10
-        )
-        res.raise_for_status()
-        res.encoding = "utf-8"
-        
-        soup = BeautifulSoup(res.text, 'xml')
-        
-        title = f"🏛️ 日本国憲法 第{target_no}条"
-        display_text = "条文が見つかりませんでした。"
-        
-        if target_no == "前文":
-            title = "📜 日本国憲法 前文"
-            preamble = soup.find('Preamble')
-            if preamble:
-                display_text = preamble.get_text(strip=True)
-        else:
-            k_no = to_kanji(target_no)
+# --- v2 JSON解析ロジック ---
+async def fetch_v2_and_edit_response(token, target_no):
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(LAW_API_V2, timeout=15)
+            res.raise_for_status()
+            data = res.json()
             
-            # 複数の方法で検索
-            article = None
+            # v2の階層を掘る
+            articles = data.get("law_full_text", {}).get("LawBody", {}).get("MainProvision", {}).get("Articles", [])
             
-            # 方法1: ArticleTitle属性で検索
-            article = soup.find('Article', {'ArticleTitle': f'第{k_no}条'})
-            
-            # 方法2: ArticleTitle要素で検索
-            if not article:
-                for art in soup.find_all('Article'):
-                    title_elem = art.find('ArticleTitle')
-                    if title_elem and f'第{k_no}条' in title_elem.get_text():
-                        article = art
-                        break
-            
-            # 方法3: Num属性で検索
-            if not article:
-                article = soup.find('Article', {'Num': str(target_no)})
-            
-            if article:
-                # ArticleCaption（条文の見出し）を取得
-                caption = article.find('ArticleCaption')
-                caption_text = f"【{caption.get_text(strip=True)}】\n" if caption else ""
-                
-                # Paragraphから本文を取得
-                paragraphs = article.find_all('Paragraph')
-                para_texts = []
-                for para in paragraphs:
-                    para_num = para.get('Num', '')
-                    sentences = para.find_all('Sentence')
-                    if sentences:
-                        para_text = ''.join([s.get_text(strip=True) for s in sentences])
-                        if para_num and para_num != '1':
-                            para_texts.append(f"{para_num}. {para_text}")
+            title = f"🏛️ 日本国憲法 第{target_no}条"
+            display_text = "条文が見つかりませんでした。"
+
+            for art in articles:
+                # v2は article_num が "9" のように数字文字列で来るのでそのまま比較可能
+                if art.get("article_num") == str(target_no):
+                    caption = art.get("article_caption", "")
+                    paragraphs = art.get("paragraphs", [])
+                    para_texts = []
+                    for p in paragraphs:
+                        sentences = p.get("sentences", [])
+                        text = "".join([s.get("sentence_text", "") for s in sentences])
+                        # 項番号があれば振る
+                        p_num = p.get("paragraph_num", "")
+                        if p_num and p_num != "1":
+                            para_texts.append(f"{p_num} {text}")
                         else:
-                            para_texts.append(para_text)
-                
-                if para_texts:
-                    display_text = caption_text + '\n'.join(para_texts)
-        
-        # Discordメッセージを更新
-        patch_url = f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original"
-        payload = {
-            "embeds": [{
-                "title": title,
-                # 無駄なスペースは消すけど、改行（\n）は守る書き方
-                "description": display_text.replace(" ", "").replace("　", "").strip()[:1800],
-                "color": 0x3498DB,
-                "footer": {"text": "e-Gov APIより取得"}
-            }]
-        }
-        response = requests.patch(patch_url, json=payload, timeout=10)
-        response.raise_for_status()
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-
-@app.post("/interactions")
-async def handle_interactions(request: Request):
-    signature = request.headers.get("X-Signature-Ed25519")
-    timestamp = request.headers.get("X-Signature-Timestamp")
-    body = await request.body()
-    
-    try:
-        VerifyKey(bytes.fromhex(PUBLIC_KEY)).verify(
-            timestamp.encode() + body, bytes.fromhex(signature)
-        )
-    except:
-        raise HTTPException(status_code=401)
-    
-    data = await request.json()
-    
-    if data.get("type") == 1:
-        return {"type": 1}
-    
-    if data.get("type") == 2:
-        token = data.get("token")
-        options = data["data"].get("options", [])
-        target_no = options[0]["value"] if options else "前文"
-        
-        asyncio.create_task(fetch_and_edit_response(token, target_no))
-        return {"type": 5}
-
-@app.on_event("startup")
-async def register_commands():
-    url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
-    headers = {"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}
-    payload = {
-        "name": "law",
-        "description": "日本国憲法を表示します",
-        "options": [{"name": "number", "description": "条文番号（例：9）", "type": 3, "required": False}]
-    }
-    requests.post(url, headers=headers, json=payload)
+                            para_texts.append(text)
+                    
+                    display_text = f"**{caption}**\n\n" + "\n".join(para_texts)
+                    break
+            
+            # Discordへ反映
+            patch_url = f"https://discord.com/api/v10/webhooks/{APPLICATION_ID}/{token}/messages/@original"
+            payload = {
+                "embeds": [{
+                    "title": title,
+                    "description": display_text[:1800],
+                    "color": 0x3498DB,
+                    "footer": {"text": "e-Gov API v2 (JSON) / Koyeb Hosting"}
+                }]
+            }
+            await client.patch(patch_url, json=payload)
+        except Exception as e:
+            print(f"Error: {e}")
