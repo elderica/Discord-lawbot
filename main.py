@@ -19,4 +19,4 @@ LAW_MASTER = {
 }
 
 for law_name, law_id in LAW_MASTER.items():
-   print(f"法律名:"{law_name},"法律id:"{law_id})
+   print(f"法律名:{law_name},法律id:{law_id}")
