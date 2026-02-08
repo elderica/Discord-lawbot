@@ -29,3 +29,40 @@ LAW_MASTER = {
 
 for law_name, law_id in LAW_MASTER.items():
    print(f"法律名:{law_name},法律id:{law_id}")
+
+# --- 1. 署名検証用の関数 (Discordからの通信であることを証明する) ---
+def verify_signature(body: bytes, signature: str, timestamp: str):
+    verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY))
+    try:
+        # timestamp + body の組み合わせを公開鍵でチェック
+        verify_key.verify(f"{timestamp}{body.decode()}".encode(), bytes.fromhex(signature))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid request signature")
+
+app = FastAPI()
+
+@app.post("/interactions")
+async def interactions(request: Request):
+    # 2. Discordからのヘッダーを取得
+    signature = request.headers.get("X-Signature-Ed25519")
+    timestamp = request.headers.get("X-Signature-Timestamp")
+    body = await request.body()
+
+    # 3. 署名が正しいか検証 (これがないとDiscordに拒絶される)
+    verify_signature(body, signature, timestamp)
+
+    data = await request.json()
+
+    # 4. PINGへの応答 (Discord設定画面での「URL確認」用)
+    if data.get("type") == 1:
+        return {"type": 1}
+
+    # 5. スラッシュコマンド (Type 2) の処理 (仮)
+    if data.get("type") == 2:
+        # ここで後で LAW_MASTER を使って API を叩く
+        return {
+            "type": 4, # 即レスポンス
+            "data": {
+                "content": "コマンドを受け付けました！現在、法律データを取得する準備をしています..."
+            }
+        }
