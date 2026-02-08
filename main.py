@@ -6,6 +6,7 @@ import unicodedata
 from fastapi import FastAPI, Request, HTTPException
 from nacl.signing import VerifyKey
 from contextlib import asynccontextmanager
+import uvicorn
 
 # --- 設定 ---
 APPLICATION_ID = os.getenv("APPLICATION_ID")
@@ -67,3 +68,6 @@ async def interactions(request: Request):
                 "content": "コマンドを受け付けました！現在、法律データを取得する準備をしています..."
             }
         }
+
+if __name__ == "__main__":
+    uvicorn.run(app,"0.0.0.0",port=8080)
