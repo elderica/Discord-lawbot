@@ -33,13 +33,10 @@ async def title(ctx, law_title: str):
     """Search Japanese law"""
     results = await law.title(law_title)
     with io.StringIO() as table:
-        #print("|law_num|law_revision_id|law_title|", file=table)
-        #print("|:------|:--------------|:--------|", file=table)
         for l in results[:5]:
             print(f"* {l['law_title']}", file=table)
             print(f"  * {l['law_num']}", file=table)
             print(f"  * {l['law_revision_id']}", file=table)
-            #print(f"* |{l['law_num']}|{l['law_revision_id']}|{l['law_title']}|", file=table)
         await ctx.send(table.getvalue())
 
 @jplaw.command()

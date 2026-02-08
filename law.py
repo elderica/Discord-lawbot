@@ -37,9 +37,5 @@ if __name__ == '__main__':
     import sys
     import asyncio
     results = asyncio.run(title(sys.argv[1]))
-    with io.StringIO() as table:
-        print("|law_num|law_revision_id|law_title|", file=table)
-        print("|:------|:--------------|:--------|", file=table)
-        for l in results:
-            print(f"|{l['law_num']}|{l['law_revision_id']}|{l['law_title']}|", file=table)
-        print(table.getvalue())
+    import pprint
+    pprint.pp(results)
