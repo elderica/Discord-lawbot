@@ -15,7 +15,7 @@ BASE_URL = " https://laws.e-gov.go.jp/api/"
 
 async def get_lawdata(law_id,article_num):
      url = f"https://laws.e-gov.go.jp/api/"
-     params = {'tilte': 'lawtitle', 'id': 'law_revision_id'}
+     params = {'title': 'lawtitle', 'id': 'law_revision_id'}
     
 async with httpx.AsyncClient() as client:
         r = await client.get(url)
