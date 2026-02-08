@@ -1,6 +1,7 @@
 import os
 import asyncio
 import httpx
+import requests
 import unicodedata
 from fastapi import FastAPI, Request, HTTPException
 from nacl.signing import VerifyKey
@@ -13,7 +14,7 @@ PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 BASE_URL = "https://laws.e-gov.go.jp/api/2"
 
 async def get_lawdata(law_id,article_num):
-     url = f"https://laws.e-gov.go.jp/api/2/law_data/{law_id}?response_format=json"
+     url = f"https://laws.e-gov.go.jp/api/"
     
 async with httpx.AsyncClient() as client:
         r = await client.get(url)
@@ -22,9 +23,9 @@ async with httpx.AsyncClient() as client:
       law_id   = data.law_revision_id
     httpx.AsyncClient(timeout=10.0)
 LAW_MASTER = {
-    "労働基準法": "322AC0000000049_20250601_504AC0000000068",
-    "労働契約法": "419AC0000000128_20200401_430AC0000000071",
-    "消費者契約法": "412AC0000000061_20250601_504AC0000000068"
+    "労働基準法": "",
+    "労働契約法": "",
+    "消費者契約法": ""
 }
 
 for law_name, law_id in LAW_MASTER.items():
