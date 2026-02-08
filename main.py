@@ -1,73 +1,52 @@
 import os
-import asyncio
-import httpx
-import requests
-import unicodedata
-from fastapi import FastAPI, Request, HTTPException
-from nacl.signing import VerifyKey
-from contextlib import asynccontextmanager
-import uvicorn
+import io
+import discord
+from discord.ext import commands
+from dotenv import load_dotenv
+import law
 
-# --- 設定 ---
-APPLICATION_ID = os.getenv("APPLICATION_ID")
-BOT_TOKEN = os.getenv("DISCORD_TOKEN")
-PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
-BASE_URL = " https://laws.e-gov.go.jp/api/2"
+load_dotenv()
 
-async def get_lawdata(law_id,article_num):
-     params = {'title': 'lawtitle', 'id': 'law_revision_id'}
-    
-async with httpx.AsyncClient() as client:
-        r = await client.get(BASE_URL)
-        data = r.json()
-      law_name = data.law_title
-      law_id   = data.law_revision_id
-    httpx.AsyncClient(timeout=10.0)
-LAW_MASTER = {
-    "労働基準法": "",
-    "労働契約法": "",
-    "消費者契約法": ""
-}
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+GUILD_ID = os.getenv('GUILD_ID')
 
-for law_name, law_id in LAW_MASTER.items():
-   print(f"法律名:{law_name},法律id:{law_id}")
+description = "Retrieve Japanese law text"
 
-# --- 1. 署名検証用の関数 (Discordからの通信であることを証明する) ---
-def verify_signature(body: bytes, signature: str, timestamp: str):
-    verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY))
-    try:
-        # timestamp + body の組み合わせを公開鍵でチェック
-        verify_key.verify(f"{timestamp}{body.decode()}".encode(), bytes.fromhex(signature))
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid request signature")
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='/', description=description, intents=intents)
 
-app = FastAPI()
+@bot.group()
+async def jplaw(ctx):
+    if ctx.invoked_subcommand is None:
+        await ctx.send('Invalid subcommand.')
 
-@app.post("/interactions")
-async def interactions(request: Request):
-    # 2. Discordからのヘッダーを取得
-    signature = request.headers.get("X-Signature-Ed25519")
-    timestamp = request.headers.get("X-Signature-Timestamp")
-    body = await request.body()
+@jplaw.command(name='treesync')
+async def treesync(ctx):
+    guild = discord.Object(GUILD_ID)
+    await bot.tree.sync(guild=guild)
+    await ctx.send('treesync')
 
-    # 3. 署名が正しいか検証 (これがないとDiscordに拒絶される)
-    verify_signature(body, signature, timestamp)
 
-    data = await request.json()
+@jplaw.command()
+async def title(ctx, law_title: str):
+    """Search Japanese law"""
+    results = await law.title(law_title)
+    with io.StringIO() as table:
+        #print("|law_num|law_revision_id|law_title|", file=table)
+        #print("|:------|:--------------|:--------|", file=table)
+        for l in results[:5]:
+            print(f"* {l['law_title']}", file=table)
+            print(f"  * {l['law_num']}", file=table)
+            print(f"  * {l['law_revision_id']}", file=table)
+            #print(f"* |{l['law_num']}|{l['law_revision_id']}|{l['law_title']}|", file=table)
+        await ctx.send(table.getvalue())
 
-    # 4. PINGへの応答 (Discord設定画面での「URL確認」用)
-    if data.get("type") == 1:
-        return {"type": 1}
-
-    # 5. スラッシュコマンド (Type 2) の処理 (仮)
-    if data.get("type") == 2:
-        # ここで後で LAW_MASTER を使って API を叩く
-        return {
-            "type": 4, # 即レスポンス
-            "data": {
-                "content": "コマンドを受け付けました！現在、法律データを取得する準備をしています..."
-            }
-        }
+@jplaw.command()
+async def text(ctx, law_id_or_num_or_revision_id: str):
+    """Retrieve law text"""
+    results = await law.text(law_id_or_num_or_revision_id)
+    await ctx.send('\n'.join(results[:10]))
 
 if __name__ == "__main__":
-    uvicorn.run(app,"0.0.0.0",port=8080)
+    bot.run(BOT_TOKEN)

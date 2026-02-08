@@ -1,15 +1,8 @@
-# 1. フルセットのPython 3.11（全部入り）を使う
-FROM python:3.11
 
-# 2. 作業ディレクトリ設定
+FROM python:3.12-slim-trixie
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY . /app
+ENV UV_NO_DEV=1
 WORKDIR /app
-
-# 3. 依存関係のインストール
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 4. コードをコピー
-COPY . .
-
-# 5. 実行
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+RUN uv sync --locked
+CMD ["uv", "run", "main"]
