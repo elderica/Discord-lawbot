@@ -17,3 +17,7 @@ LAW_MASTER = {
     "労働契約法": "419AC0000000128_20200401_430AC0000000071",
     "消費者契約法": "412AC0000000061_20250601_504AC0000000068"
 }
+
+for law_name, law_id in LAW_MASTER.items() {
+print(f"法律名:"{law_name},"法律id:"{law_id})
+}
