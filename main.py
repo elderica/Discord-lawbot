@@ -11,10 +11,11 @@ from contextlib import asynccontextmanager
 APPLICATION_ID = os.getenv("APPLICATION_ID")
 BOT_TOKEN = os.getenv("DISCORD_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
-BASE_URL = "https://laws.e-gov.go.jp/api/2"
+BASE_URL = " https://laws.e-gov.go.jp/api/"
 
 async def get_lawdata(law_id,article_num):
      url = f"https://laws.e-gov.go.jp/api/"
+     params = {'tilte': 'lawtitle', 'id': 'law_revision_id'}
     
 async with httpx.AsyncClient() as client:
         r = await client.get(url)
