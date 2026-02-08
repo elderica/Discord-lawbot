@@ -45,8 +45,11 @@ async def title(ctx, law_title: str):
 @jplaw.command()
 async def text(ctx, law_id_or_num_or_revision_id: str):
     """Retrieve law text"""
-    results = await law.text(law_id_or_num_or_revision_id)
-    await ctx.send('\n'.join(results[:10]))
+    text = await law.text(law_id_or_num_or_revision_id)
+    if text:
+        await ctx.send('\n'.join(results[:10]))
+    else:
+        await ctx.send('Invalid law id or num or revision id')
 
 if __name__ == "__main__":
     bot.run(BOT_TOKEN)

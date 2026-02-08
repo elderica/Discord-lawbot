@@ -28,7 +28,10 @@ async def text(law_id_or_num_or_revision_id: str):
     url = urljoin(API_ENDPOINT_LAW_DATA, law_id_or_num_or_revision_id)
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
-        return jq.compile(jq_query).input_text(response.text).all()
+        if response.status_code == httpx.codes.OK:
+            return jq.compile(jq_query).input_text(response.text).all()
+        else:
+            return None
 
 if __name__ == '__main__':
     import sys
