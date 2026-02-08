@@ -15,11 +15,12 @@ BASE_URL = "https://laws.e-gov.go.jp/api/2"
 async def get_lawdata(law_id,article_num):
      url = f"https://laws.e-gov.go.jp/api/2/law_data/{law_id}?response_format=json"
     
-    async with httpx.AsyncClient() as client:
+async with httpx.AsyncClient() as client:
         r = await client.get(url)
         data = r.json()
       law_name = data.law_title
       law_id   = data.law_revision_id
+    httpx.AsyncClient(timeout=10.0)
 LAW_MASTER = {
     "労働基準法": "322AC0000000049_20250601_504AC0000000068",
     "労働契約法": "419AC0000000128_20200401_430AC0000000071",
